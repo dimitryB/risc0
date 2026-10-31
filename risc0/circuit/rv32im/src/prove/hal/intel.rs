@@ -1070,7 +1070,17 @@ fn shadow_eval_check(
     let c = cpu_hal.alloc_elem("check", check.size());
     let gr: Vec<&_> = g.iter().collect();
     let glr: Vec<&_> = gl.iter().collect();
-    crate::prove::hal::cpu::CpuCircuitHal.eval_check(&c, &gr, &glr, poly_mix, po2, steps);
+    <crate::prove::hal::cpu::CpuCircuitHal as CircuitHal<
+        CpuHal<risc0_core::field::baby_bear::BabyBear>,
+    >>::eval_check(
+        &crate::prove::hal::cpu::CpuCircuitHal,
+        &c,
+        &gr,
+        &glr,
+        poly_mix,
+        po2,
+        steps,
+    );
     let (gv, cv) = (check.to_vec(), c.to_vec());
     let bad = gv.iter().zip(&cv).filter(|(a, b)| a != b).count();
     let first = gv.iter().zip(&cv).position(|(a, b)| a != b);
