@@ -34,7 +34,7 @@ tracing = { version = "0.1", default-features = false, features = [
 ] }
 
 [target.'cfg(any(target_os="macos", target_os="ios"))'.dependencies]
-metal = { workspace = true }
+metal = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "zkvm"))'.dependencies]
 ndarray = { version = "0.16", features = ["rayon"], optional = true }
@@ -60,8 +60,8 @@ cuda = ["dep:cust", "prove", "risc0-sys/cuda"]
 rocm = ["prove", "risc0-sys/rocm"]
 intel = ["prove", "risc0-sys/intel"]
 default = []
-metal = ["prove"]
-metal_prefix_products = []
+metal = ["prove", "dep:metal", "risc0-sys/metal"]
+metal_prefix_products = ["metal"]
 prove = [
   "dep:ff",
   "dep:ndarray",

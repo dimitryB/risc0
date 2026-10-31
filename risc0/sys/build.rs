@@ -53,7 +53,10 @@ fn main() {
         build_intel_kernels();
     }
 
-    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos" || os == "ios") {
+    // CPU proving on Apple platforms must not require the Metal compiler.
+    if env::var("CARGO_FEATURE_METAL").is_ok()
+        && env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos" || os == "ios")
+    {
         println!(
             "cargo:metal_root={}",
             manifest_dir.join("kernels/zkp/metal").to_string_lossy()

@@ -22,7 +22,10 @@ pub mod dual;
 pub mod hip;
 #[cfg(feature = "intel")]
 pub mod intel;
-#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "ios"))]
+#[cfg(all(
+    feature = "metal",
+    any(all(target_os = "macos", target_arch = "aarch64"), target_os = "ios")
+))]
 pub mod metal;
 
 use std::{

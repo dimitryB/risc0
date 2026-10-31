@@ -60,12 +60,39 @@ pub(crate) fn shrink_wrap(identity_p254_seal_bytes: &[u8]) -> Result<Seal> {
     std::fs::write(seal_path, seal_json)?;
 
     tracing::debug!("risc0-groth16-prover");
-    let output = Command::new("docker")
-        .arg("run")
+    let mut command = Command::new("docker");
+    command.arg("run");
+    // A native Mac supervisor owns this exact container and removes it if the
+    // worker is killed. Other platforms retain their existing invocation.
+    #[cfg(target_os = "macos")]
+    if let Ok(name) = std::env::var("RISC0_GROTH16_CONTAINER_NAME") {
+        command.args([
+            "--name",
+            &name,
+            "--platform",
+            "linux/amd64",
+            "--pull",
+            "never",
+            "--network",
+            "none",
+            "--memory",
+            "24g",
+            "--cpus",
+            "6",
+            "--entrypoint",
+            "timeout",
+        ]);
+    }
+    command
         .arg("--rm")
         .arg("-v")
         .arg(format!("{}:/mnt", work_dir.to_string_lossy()))
-        .arg(IMAGE)
+        .arg(IMAGE);
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("RISC0_GROTH16_CONTAINER_NAME").is_some() {
+        command.args(["1800", "/app/prover.sh"]);
+    }
+    let output = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()?;
