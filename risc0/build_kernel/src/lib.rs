@@ -27,6 +27,14 @@ const METAL_INCS: &[(&str, &str)] = &[
     ("fpext.h", include_str!("../kernels/metal/fpext.h")),
 ];
 
+/// Shared field headers used by the retained Metal kernels.
+///
+/// Exposing the embedded sources lets runtime-compiled libraries use the same
+/// headers as offline builds without depending on sibling crate source paths.
+pub fn metal_headers() -> &'static [(&'static str, &'static str)] {
+    METAL_INCS
+}
+
 #[derive(Eq, PartialEq, Hash)]
 #[non_exhaustive]
 pub enum KernelType {

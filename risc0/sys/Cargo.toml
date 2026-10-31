@@ -24,3 +24,6 @@ cuda = ["dep:blst", "dep:cust", "dep:sppark"]
 rocm = ["dep:blst", "dep:sppark"]
 intel = []
 metal = []
+# Explicit opt-in: embed source for the system Metal runtime compiler instead
+# of invoking the separately installed offline metal/metallib tools.
+metal-runtime = ["metal"]

@@ -61,6 +61,7 @@ rocm = ["prove", "risc0-sys/rocm"]
 intel = ["prove", "risc0-sys/intel"]
 default = []
 metal = ["prove", "dep:metal", "risc0-sys/metal"]
+metal-runtime = ["metal", "risc0-sys/metal-runtime"]
 metal_prefix_products = ["metal"]
 prove = [
   "dep:ff",

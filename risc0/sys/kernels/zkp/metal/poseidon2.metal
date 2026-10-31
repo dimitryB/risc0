@@ -180,7 +180,9 @@ kernel void poseidon2_rows(const device Fp* ROUND_CONSTANTS,
       used = 0;
     }
   }
-  if (used != 0 || count == 0) {
+  // Match unpadded_hash: an empty row still permutes the zero state once.
+  // count is the number of rows; col_size is the number of elements hashed.
+  if (used != 0 || col_size == 0) {
     // Zero pad to get a CELLS_RATE-aligned number of inputs
     for (uint i = used; i < CELLS_RATE; i++)  {
         cells[i] = 0;

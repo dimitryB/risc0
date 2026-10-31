@@ -61,7 +61,11 @@ fn main() {
             "cargo:metal_root={}",
             manifest_dir.join("kernels/zkp/metal").to_string_lossy()
         );
-        build_metal_kernels();
+        if env::var_os("CARGO_FEATURE_METAL_RUNTIME").is_some() {
+            embed_metal_sources();
+        } else {
+            build_metal_kernels();
+        }
     }
 }
 
@@ -258,4 +262,50 @@ fn build_metal_kernels() {
             .dep(inc_path.join("sha256.h"))
             .compile(&out);
     }
+}
+
+fn embed_metal_sources() {
+    // Same source files and field headers as build_metal_kernels. This only
+    // expands the known local includes; kernel arithmetic remains unchanged.
+    // There is no implicit runtime fallback when an offline compiler fails.
+    const SOURCES: &[&str] = &[
+        "sha256.h",
+        "eltwise.metal",
+        "fri.metal",
+        "mix.metal",
+        "ntt.metal",
+        "poseidon2.metal",
+        "sha.metal",
+        "zk.metal",
+    ];
+    fn append(source: &mut String, name: &str, contents: &str) {
+        source.push_str(&format!("\n#line 1 \"{name}\"\n"));
+        for line in contents.lines() {
+            match line.trim() {
+                "#pragma once"
+                | "#include \"fp.h\""
+                | "#include \"fpext.h\""
+                | "#include \"sha256.h\"" => source.push('\n'),
+                directive if directive.starts_with("#include \"") => {
+                    panic!("unhandled runtime Metal include in {name}: {directive}");
+                }
+                _ => {
+                    source.push_str(line);
+                    source.push('\n');
+                }
+            }
+        }
+    }
+    let mut source = String::new();
+    for (name, contents) in risc0_build_kernel::metal_headers() {
+        append(&mut source, name, contents);
+    }
+    for name in SOURCES {
+        let path = Path::new("kernels/zkp/metal").join(name);
+        println!("cargo:rerun-if-changed={}", path.display());
+        append(&mut source, name, &std::fs::read_to_string(path).unwrap());
+    }
+    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("metal_kernels_zkp.metal");
+    std::fs::write(&output, source).unwrap();
+    println!("cargo:metal_source_zkp={}", output.display());
 }
