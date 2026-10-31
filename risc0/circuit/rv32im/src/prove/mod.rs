@@ -23,6 +23,7 @@ use risc0_core::scope;
 
 use crate::execute::segment::Segment;
 
+pub use risc0_zkp::hal::cpu::MetalFoldStats;
 pub use witgen::PreflightResults;
 
 const GLOBAL_MIX: usize = 0;
@@ -31,6 +32,11 @@ const GLOBAL_OUT: usize = 1;
 pub type Seal = Vec<u32>;
 
 pub trait SegmentProver {
+    /// Cumulative GPU execution evidence, available only for explicit hybrid provers.
+    fn metal_stats(&self) -> Option<MetalFoldStats> {
+        None
+    }
+
     fn prove(&self, segment: &Segment) -> Result<Seal> {
         scope!("prove");
         let results = self.preflight(segment)?;
@@ -89,6 +95,12 @@ pub fn segment_prover() -> Result<Box<dyn SegmentProver>> {
             self::hal::cpu::segment_prover()
         }
     }
+}
+
+/// Explicit CPU segment prover with only Poseidon2 Merkle folding on Metal.
+#[cfg(all(feature = "metal-hybrid", target_os = "macos", target_arch = "aarch64"))]
+pub fn metal_segment_prover(staging_bytes: usize) -> Result<Box<dyn SegmentProver>> {
+    self::hal::cpu::metal_segment_prover(staging_bytes)
 }
 
 /// Trigger HIP module loading so the first kernel launch doesn't stall.

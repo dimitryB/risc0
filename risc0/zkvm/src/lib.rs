@@ -87,6 +87,19 @@ pub use risc0_binfmt::{ExitCode, InvalidExitCodeError, SystemState};
 pub use risc0_zkp::core::digest::{digest, Digest};
 pub use risc0_zkvm_platform::{align_up, declare_syscall, memory::GUEST_MAX_MEM, PAGE_SIZE};
 
+#[cfg(all(
+    feature = "metal-hybrid",
+    not(all(target_os = "macos", target_arch = "aarch64"))
+))]
+compile_error!("metal-hybrid requires Apple Silicon macOS");
+#[cfg(all(
+    feature = "metal-hybrid",
+    any(feature = "cuda", feature = "rocm", feature = "intel")
+))]
+compile_error!("metal-hybrid must be built separately from CUDA, ROCm, and Intel backends");
+#[cfg(feature = "metal-hybrid")]
+pub use self::host::client::prove::local::MetalSegmentReport;
+
 #[cfg(not(target_os = "zkvm"))]
 #[cfg(any(feature = "client", feature = "prove"))]
 pub use bytes::Bytes;

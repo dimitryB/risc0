@@ -164,6 +164,10 @@ where
     C: CircuitHal<H> + CircuitWitnessGenerator<H> + CircuitAccumulator<H> + 'static,
     F: Fn() -> (Arc<H>, Arc<C>),
 {
+    fn metal_stats(&self) -> Option<super::MetalFoldStats> {
+        self.get_hal().0.metal_stats()
+    }
+
     fn preflight(&self, segment: &Segment) -> Result<PreflightResults> {
         scope!("preflight");
 

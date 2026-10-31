@@ -16,7 +16,7 @@
 
 pub(crate) mod dev_mode;
 pub(crate) mod keccak;
-mod prover_impl;
+pub(crate) mod prover_impl;
 #[cfg(test)]
 mod tests;
 pub(crate) mod union_peak;

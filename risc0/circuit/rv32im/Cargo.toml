@@ -82,6 +82,7 @@ intel = [
   "risc0-zkp/intel",
 ]
 default = []
+metal-hybrid = ["prove", "risc0-zkp/metal-runtime"]
 # entropy_finder = []
 execute = [
   "anyhow/backtrace",
