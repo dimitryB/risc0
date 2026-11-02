@@ -535,62 +535,68 @@ impl<MH: MetalHash> MetalHal<MH> {
         if empty_grid {
             return;
         }
-        let cmd_buffer = self.cmd_queue.new_command_buffer();
-        let kernel_name = kernel.compute_function().unwrap().name();
-        cmd_buffer.set_label(kernel_name);
-        let cmd_encoder = cmd_buffer.new_compute_command_encoder();
+        // Metal returns autoreleased command buffers and encoders. Drain them
+        // after each synchronous completion so completed commands cannot retain
+        // proof buffers until a process-wide or thread-local pool is drained.
+        metal::objc::rc::autoreleasepool(|| {
+            let cmd_buffer = self.cmd_queue.new_command_buffer();
+            let kernel_name = kernel.compute_function().unwrap().name();
+            cmd_buffer.set_label(kernel_name);
+            let cmd_encoder = cmd_buffer.new_compute_command_encoder();
 
-        callback(cmd_encoder);
+            callback(cmd_encoder);
 
-        let pipeline_state = self
-            .device
-            .new_compute_pipeline_state_with_function(kernel.compute_function().unwrap())
-            .unwrap();
+            let pipeline_state = self
+                .device
+                .new_compute_pipeline_state_with_function(kernel.compute_function().unwrap())
+                .unwrap();
 
-        cmd_encoder.set_compute_pipeline_state(&pipeline_state);
-        for (index, arg) in args.iter().enumerate() {
-            match arg {
-                KernelArg::Buffer { buffer, offset } => {
-                    cmd_encoder.set_buffer(index as u64, Some(buffer), *offset);
-                }
-                KernelArg::Integer(value) => {
-                    cmd_encoder.set_bytes(
-                        index as u64,
-                        mem::size_of_val(value) as u64,
-                        value.to_le_bytes().as_ptr() as *const c_void,
-                    );
-                }
-                KernelArg::Null => {
-                    cmd_encoder.set_buffer(index as u64, None, 0);
+            cmd_encoder.set_compute_pipeline_state(&pipeline_state);
+            for (index, arg) in args.iter().enumerate() {
+                match arg {
+                    KernelArg::Buffer { buffer, offset } => {
+                        cmd_encoder.set_buffer(index as u64, Some(buffer), *offset);
+                    }
+                    KernelArg::Integer(value) => {
+                        cmd_encoder.set_bytes(
+                            index as u64,
+                            mem::size_of_val(value) as u64,
+                            value.to_le_bytes().as_ptr() as *const c_void,
+                        );
+                    }
+                    KernelArg::Null => {
+                        cmd_encoder.set_buffer(index as u64, None, 0);
+                    }
                 }
             }
-        }
 
-        match opts {
-            Some((thread_groups_count, threads_per_threadgroup)) => {
-                cmd_encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
-            }
-            None => {
-                let threads_per_grid = MTLSize::new(count, 1, 1);
-                let threads_per_threadgroup =
-                    MTLSize::new(pipeline_state.max_total_threads_per_threadgroup(), 1, 1);
-                cmd_encoder.dispatch_threads(threads_per_grid, threads_per_threadgroup);
-            }
-        };
+            match opts {
+                Some((thread_groups_count, threads_per_threadgroup)) => {
+                    cmd_encoder
+                        .dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
+                }
+                None => {
+                    let threads_per_grid = MTLSize::new(count, 1, 1);
+                    let threads_per_threadgroup =
+                        MTLSize::new(pipeline_state.max_total_threads_per_threadgroup(), 1, 1);
+                    cmd_encoder.dispatch_threads(threads_per_grid, threads_per_threadgroup);
+                }
+            };
 
-        cmd_encoder.end_encoding();
+            cmd_encoder.end_encoding();
 
-        cmd_buffer.commit();
-        cmd_buffer.wait_until_completed();
-        let status = cmd_buffer.status();
-        assert_eq!(
-            status,
-            MTLCommandBufferStatus::Completed,
-            "Metal kernel {kernel_name} failed (command status {status:?})"
-        );
-        self.completed_dispatches
-            .set(self.completed_dispatches.get() + 1);
-        tracing::debug!(kernel = kernel_name, count, "Metal dispatch completed");
+            cmd_buffer.commit();
+            cmd_buffer.wait_until_completed();
+            let status = cmd_buffer.status();
+            assert_eq!(
+                status,
+                MTLCommandBufferStatus::Completed,
+                "Metal kernel {kernel_name} failed (command status {status:?})"
+            );
+            self.completed_dispatches
+                .set(self.completed_dispatches.get() + 1);
+            tracing::debug!(kernel = kernel_name, count, "Metal dispatch completed");
+        });
     }
 }
 

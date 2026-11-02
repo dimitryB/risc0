@@ -100,6 +100,9 @@ compile_error!("metal-hybrid must be built separately from CUDA, ROCm, and Intel
 #[cfg(feature = "metal-hybrid")]
 pub use self::host::client::prove::local::MetalSegmentReport;
 
+#[cfg(all(feature = "metal-recursion", target_os = "macos", target_arch = "aarch64"))]
+pub use risc0_circuit_recursion::prove::{metal_recursion_stats, metal_recursion_kernel_source, MetalRecursionStats};
+
 #[cfg(not(target_os = "zkvm"))]
 #[cfg(any(feature = "client", feature = "prove"))]
 pub use bytes::Bytes;

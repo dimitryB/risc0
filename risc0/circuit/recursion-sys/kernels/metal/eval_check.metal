@@ -1,4 +1,5 @@
-// This code is automatically generated
+// The build inserts the current pinned CUDA poly_fp body verbatim.
+// Only this address-space wrapper is Metal-specific.
 
 #include <metal_stdlib>
 
@@ -17,8 +18,7 @@ FpExt poly_fp(uint idx,
             const device Fp* mix,
             const device Fp* accum,
             const device FpExt* poly_mix) {
-    uint mask = size - 1;
-
+    /* GENERATED_POLY_FP_BODY */
 }
 
 kernel void eval_check(device Fp* check,

@@ -23,11 +23,8 @@ pub(crate) mod cuda;
 pub(crate) mod hip;
 #[cfg(feature = "intel")]
 pub(crate) mod intel;
-// #[cfg(all(
-//     feature = "prove",
-//     any(all(target_os = "macos", target_arch = "aarch64"), target_os = "ios")
-// ))]
-// pub mod metal;
+#[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+pub(crate) mod metal;
 
 pub(crate) trait CircuitWitnessGenerator<H: Hal> {
     fn generate_witness(

@@ -12,180 +12,321 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, rc::Rc};
+//! Poseidon2 recursion over shared Metal buffers. Witness generation and
+//! accumulation use the pinned CPU routines directly on those shared buffers.
+//! Every Metal dispatch completes before returning; CPU access therefore occurs
+//! only after prior GPU writes complete, and later dispatches see CPU writes.
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
-use metal::ComputePipelineDescriptor;
-use risc0_core::scope;
+use super::{CircuitAccumulator, CircuitWitnessGenerator};
+use crate::{
+    prove::{RecursionProver, RecursionProverImpl},
+    taps::TAPSET,
+    CircuitImpl, GLOBAL_MIX, GLOBAL_OUT, REGISTER_GROUP_ACCUM, REGISTER_GROUP_CTRL,
+    REGISTER_GROUP_DATA,
+};
+use anyhow::{bail, ensure, Result};
+use metal::{CompileOptions, ComputePipelineDescriptor};
+use risc0_circuit_recursion_sys::{
+    risc0_circuit_recursion_cpu_accum, risc0_circuit_recursion_cpu_witgen, RawAccumBuffers,
+    RawExecBuffers, RawPreflightTrace, StepMode,
+};
+use risc0_sys::ffi_wrap;
 use risc0_zkp::{
+    adapter::CircuitInfo,
     core::log2_ceil,
     field::{
         baby_bear::{BabyBearElem, BabyBearExtElem},
-        map_pow, Elem as _, RootsOfUnity,
+        map_pow, RootsOfUnity,
     },
     hal::{
-        metal::{BufferImpl as MetalBuffer, KernelArg, MetalHal, MetalHash},
-        AccumPreflight, Buffer as _, CircuitHal,
+        metal::{BufferImpl, KernelArg, MetalHalPoseidon2},
+        AccumPreflight, Buffer, CircuitHal, Hal,
     },
-    INV_RATE, ZK_CYCLES,
+    INV_RATE,
 };
 
-const METAL_LIB: &[u8] = include_bytes!(env!("RECURSION_METAL_PATH"));
+const SOURCE: &str = include_str!(env!("RECURSION_METAL_SOURCE"));
+static COMPLETED_CHECKS: AtomicU64 = AtomicU64::new(0);
+static EVALUATION_POINTS: AtomicU64 = AtomicU64::new(0);
 
-const KERNEL_NAMES: &[&str] = &["eval_check", "step_compute_accum", "step_verify_accum"];
-
-use crate::{
-    GLOBAL_MIX, GLOBAL_OUT, REGISTER_GROUP_ACCUM, REGISTER_GROUP_CTRL, REGISTER_GROUP_DATA,
-};
-
-#[derive(Debug)]
-pub struct MetalCircuitHal<MH: MetalHash> {
-    hal: Arc<MetalHal<MH>>,
-    kernels: HashMap<String, ComputePipelineDescriptor>,
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct MetalRecursionStats {
+    pub completed_constraint_checks: u64,
+    pub evaluation_points: u64,
 }
 
-impl<MH: MetalHash> MetalCircuitHal<MH> {
-    pub fn new(hal: Arc<MetalHal<MH>>) -> Self {
-        let library = hal.device.new_library_with_data(METAL_LIB).unwrap();
-        let mut kernels = HashMap::new();
-        for name in KERNEL_NAMES {
-            let function = library.get_function(name, None).unwrap();
-            let pipeline = ComputePipelineDescriptor::new();
-            pipeline.set_compute_function(Some(&function));
-            kernels.insert(name.to_string(), pipeline);
-        }
-        Self { hal, kernels }
+pub fn metal_recursion_stats() -> MetalRecursionStats {
+    MetalRecursionStats {
+        completed_constraint_checks: COMPLETED_CHECKS.load(Ordering::Relaxed),
+        evaluation_points: EVALUATION_POINTS.load(Ordering::Relaxed),
     }
 }
 
-impl<MH: MetalHash> CircuitHal<MetalHal<MH>> for MetalCircuitHal<MH> {
+pub fn metal_recursion_kernel_source() -> &'static str {
+    SOURCE
+}
+
+pub(crate) struct MetalCircuitHal {
+    hal: Arc<MetalHalPoseidon2>,
+    kernel: ComputePipelineDescriptor,
+}
+
+impl MetalCircuitHal {
+    fn new(hal: Arc<MetalHalPoseidon2>) -> Result<Self> {
+        let options = CompileOptions::new();
+        options.set_fast_math_enabled(false);
+        let library = hal
+            .device
+            .new_library_with_source(SOURCE, &options)
+            .map_err(|error| anyhow::anyhow!("recursion Metal compilation failed: {error}"))?;
+        let function = library
+            .get_function("eval_check", None)
+            .map_err(|error| anyhow::anyhow!("missing recursion Metal evaluator: {error}"))?;
+        let kernel = ComputePipelineDescriptor::new();
+        kernel.set_compute_function(Some(&function));
+        Ok(Self { hal, kernel })
+    }
+
+    fn validate_witness(
+        total: u32,
+        ctrl: &BufferImpl<BabyBearElem>,
+        data: &BufferImpl<BabyBearElem>,
+        global: &BufferImpl<BabyBearElem>,
+    ) -> Result<()> {
+        ensure!(total.is_power_of_two(), "invalid recursion cycle count");
+        ensure!(
+            ctrl.size() == total as usize * TAPSET.group_size(REGISTER_GROUP_CTRL),
+            "invalid ctrl buffer"
+        );
+        ensure!(
+            data.size() == total as usize * TAPSET.group_size(REGISTER_GROUP_DATA),
+            "invalid data buffer"
+        );
+        ensure!(
+            global.size() == CircuitImpl::OUTPUT_SIZE,
+            "invalid global buffer"
+        );
+        Ok(())
+    }
+}
+
+impl CircuitWitnessGenerator<MetalHalPoseidon2> for MetalCircuitHal {
+    fn generate_witness(
+        &self,
+        mode: StepMode,
+        total: u32,
+        preflight: &RawPreflightTrace,
+        ctrl: &BufferImpl<BabyBearElem>,
+        data: &BufferImpl<BabyBearElem>,
+        global: &BufferImpl<BabyBearElem>,
+    ) -> Result<()> {
+        Self::validate_witness(total, ctrl, data, global)?;
+        let buffers = RawExecBuffers {
+            ctrl: ctrl.as_ptr().cast(),
+            data: data.as_ptr().cast(),
+            global: global.as_ptr().cast(),
+        };
+        // StorageModeShared + synchronous command completion, with allocations
+        // retained by these buffer references throughout the FFI call.
+        ffi_wrap(|| unsafe { risc0_circuit_recursion_cpu_witgen(mode, &buffers, preflight, total) })
+    }
+
+    fn upload_host_witness(
+        &self,
+        data: &BufferImpl<BabyBearElem>,
+        global: &BufferImpl<BabyBearElem>,
+        host_data: Vec<BabyBearElem>,
+        host_global: Vec<BabyBearElem>,
+    ) -> Result<()> {
+        ensure!(
+            data.size() == host_data.len() && global.size() == host_global.len(),
+            "invalid host witness lengths"
+        );
+        data.view_mut(|view| view.copy_from_slice(&host_data));
+        global.view_mut(|view| view.copy_from_slice(&host_global));
+        Ok(())
+    }
+}
+
+impl CircuitAccumulator<MetalHalPoseidon2> for MetalCircuitHal {
+    fn accumulate(
+        &self,
+        work: u32,
+        total: u32,
+        ctrl: &BufferImpl<BabyBearElem>,
+        global: &BufferImpl<BabyBearElem>,
+        data: &BufferImpl<BabyBearElem>,
+        mix: &BufferImpl<BabyBearElem>,
+        accum: &BufferImpl<BabyBearElem>,
+    ) -> Result<()> {
+        Self::validate_witness(total, ctrl, data, global)?;
+        ensure!(
+            work <= total && mix.size() == CircuitImpl::MIX_SIZE,
+            "invalid accumulation inputs"
+        );
+        ensure!(
+            accum.size() == total as usize * TAPSET.group_size(REGISTER_GROUP_ACCUM),
+            "invalid accum buffer"
+        );
+        let buffers = RawAccumBuffers {
+            ctrl: ctrl.as_ptr().cast(),
+            global: global.as_ptr().cast(),
+            data: data.as_ptr().cast(),
+            mix: mix.as_ptr().cast(),
+            accum: accum.as_ptr().cast(),
+        };
+        ffi_wrap(|| unsafe { risc0_circuit_recursion_cpu_accum(&buffers, work, total) })
+    }
+}
+
+impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
     fn eval_check(
         &self,
-        check: &MetalBuffer<BabyBearElem>,
-        groups: &[&MetalBuffer<BabyBearElem>],
-        globals: &[&MetalBuffer<BabyBearElem>],
+        check: &BufferImpl<BabyBearElem>,
+        groups: &[&BufferImpl<BabyBearElem>],
+        globals: &[&BufferImpl<BabyBearElem>],
         poly_mix: BabyBearExtElem,
         po2: usize,
         steps: usize,
     ) {
-        scope!("eval_check");
-
-        const EXP_PO2: usize = log2_ceil(INV_RATE);
-        let domain = steps * INV_RATE;
-        let rou = BabyBearElem::ROU_FWD[po2 + EXP_PO2];
-        let rou =
-            MetalBuffer::copy_from("rou", &self.hal.device, self.hal.cmd_queue.clone(), &[rou]);
-        let poly_mix_pows = map_pow(poly_mix, crate::info::POLY_MIX_POWERS);
-        let poly_mix_pows = MetalBuffer::copy_from(
-            "poly_mix",
-            &self.hal.device,
-            self.hal.cmd_queue.clone(),
-            poly_mix_pows.as_slice(),
+        let domain = steps
+            .checked_mul(INV_RATE)
+            .expect("recursion domain overflow");
+        assert_eq!(steps, 1usize.checked_shl(po2 as u32).unwrap());
+        assert!(domain <= u32::MAX as usize);
+        assert_eq!(check.size(), domain * 4);
+        for group in [
+            REGISTER_GROUP_CTRL,
+            REGISTER_GROUP_DATA,
+            REGISTER_GROUP_ACCUM,
+        ] {
+            assert_eq!(groups[group].size(), domain * TAPSET.group_size(group));
+        }
+        assert_eq!(globals[GLOBAL_MIX].size(), CircuitImpl::MIX_SIZE);
+        assert_eq!(globals[GLOBAL_OUT].size(), CircuitImpl::OUTPUT_SIZE);
+        let powers = self.hal.copy_from_extelem(
+            "recursion_poly_mix",
+            &map_pow(poly_mix, crate::info::POLY_MIX_POWERS),
         );
-        let po2 = MetalBuffer::copy_from(
-            "po2",
-            &self.hal.device,
-            self.hal.cmd_queue.clone(),
-            &[po2 as u32],
+        let rou = BabyBearElem::ROU_FWD[po2 + log2_ceil(INV_RATE)];
+        self.hal.dispatch(
+            &self.kernel,
+            &[
+                check.as_arg(),
+                groups[REGISTER_GROUP_CTRL].as_arg(),
+                groups[REGISTER_GROUP_DATA].as_arg(),
+                groups[REGISTER_GROUP_ACCUM].as_arg(),
+                globals[GLOBAL_MIX].as_arg(),
+                globals[GLOBAL_OUT].as_arg(),
+                powers.as_arg(),
+                KernelArg::Integer(rou.as_u32_montgomery()),
+                KernelArg::Integer(po2 as u32),
+                KernelArg::Integer(domain as u32),
+            ],
+            domain as u64,
+            None,
         );
-        let size = MetalBuffer::copy_from(
-            "size",
-            &self.hal.device,
-            self.hal.cmd_queue.clone(),
-            &[domain as u32],
+        COMPLETED_CHECKS.fetch_add(1, Ordering::Relaxed);
+        EVALUATION_POINTS.fetch_add(domain as u64, Ordering::Relaxed);
+        tracing::info!(
+            po2,
+            domain,
+            completed_dispatches = self.hal.completed_dispatches(),
+            "Poseidon2 recursion Metal constraint check completed"
         );
-        let args = [
-            check.as_arg(),
-            groups[REGISTER_GROUP_CTRL].as_arg(),
-            groups[REGISTER_GROUP_DATA].as_arg(),
-            groups[REGISTER_GROUP_ACCUM].as_arg(),
-            globals[GLOBAL_MIX].as_arg(),
-            globals[GLOBAL_OUT].as_arg(),
-            poly_mix_pows.as_arg(),
-            rou.as_arg(),
-            po2.as_arg(),
-            size.as_arg(),
-        ];
-        let kernel = self.kernels.get("eval_check").unwrap();
-        self.hal.dispatch(kernel, &args, domain as u64, None);
     }
 
     fn accumulate(
         &self,
-        _preflight: &AccumPreflight,
-        ctrl: &MetalBuffer<BabyBearElem>,
-        io: &MetalBuffer<BabyBearElem>,
-        data: &MetalBuffer<BabyBearElem>,
-        mix: &MetalBuffer<BabyBearElem>,
-        accum: &MetalBuffer<BabyBearElem>,
-        steps: usize,
+        _: &AccumPreflight,
+        _: &BufferImpl<BabyBearElem>,
+        _: &BufferImpl<BabyBearElem>,
+        _: &BufferImpl<BabyBearElem>,
+        _: &BufferImpl<BabyBearElem>,
+        _: &BufferImpl<BabyBearElem>,
+        _: usize,
     ) {
-        let count = steps - ZK_CYCLES;
+        unreachable!("recursion uses CircuitAccumulator");
+    }
+}
 
-        let wom = vec![BabyBearExtElem::ONE; steps];
-        let wom = MetalBuffer::copy_from("wom", &self.hal.device, self.hal.cmd_queue.clone(), &wom);
-
-        let args = [
-            KernelArg::Integer(steps as u32),
-            ctrl.as_arg(),
-            data.as_arg(),
-            mix.as_arg(),
-            wom.as_arg(),
-        ];
-        let kernel = self.kernels.get("step_compute_accum").unwrap();
-        self.hal.dispatch(kernel, &args, count as u64, None);
-
-        use risc0_zkp::hal::Hal as _;
-        self.hal.prefix_products(&wom);
-
-        let args = [
-            KernelArg::Integer(steps as u32),
-            ctrl.as_arg(),
-            data.as_arg(),
-            mix.as_arg(),
-            wom.as_arg(),
-            accum.as_arg(),
-        ];
-        let kernel = self.kernels.get("step_verify_accum").unwrap();
-        self.hal.dispatch(kernel, &args, count as u64, None);
-
-        self.hal
-            .dispatch_by_name("eltwise_zeroize_fp", &[accum.as_arg()], accum.size() as u64);
-
-        self.hal
-            .dispatch_by_name("eltwise_zeroize_fp", &[io.as_arg()], io.size() as u64);
+pub(crate) fn recursion_prover(hashfn: &str) -> Result<Box<dyn RecursionProver>> {
+    match std::env::var("RISC0_RECURSION_HAL").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("cpu") => super::cpu::recursion_prover(hashfn),
+        Ok("metal") if hashfn == "poseidon2" => metal::objc::rc::autoreleasepool(|| {
+            let hal = Arc::new(MetalHalPoseidon2::new());
+            let circuit = Arc::new(MetalCircuitHal::new(hal.clone())?);
+            tracing::info!(
+                hashfn,
+                witness = "cpu-shared",
+                accumulation = "cpu-shared",
+                "recursion Metal enabled"
+            );
+            Ok(Box::new(RecursionProverImpl::new(hal, circuit)) as Box<dyn RecursionProver>)
+        }),
+        Ok("metal") => {
+            tracing::info!(
+                hashfn,
+                "recursion CPU selected; Metal supports Poseidon2 only"
+            );
+            super::cpu::recursion_prover(hashfn)
+        }
+        _ => bail!("RISC0_RECURSION_HAL must be cpu or metal"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use risc0_core::field::baby_bear::BabyBear;
+    use super::*;
     use risc0_zkp::{
-        core::hash::sha::Sha256HashSuite,
-        hal::{cpu::CpuHal, metal::MetalHalSha256},
+        core::hash::poseidon2::Poseidon2HashSuite, field::baby_bear::BabyBear, hal::cpu::CpuHal,
     };
-    use test_log::test;
-
-    use crate::{cpu::CpuCircuitHal, CircuitImpl};
-
-    // TODO: figure out a better way to test this.
-    #[test]
-    #[ignore]
-    fn eval_check() {
-        // The number of cycles, choose a number that doesn't make tests take too long.
-        const PO2: usize = 4;
-        let circuit = CircuitImpl::new();
-        let cpu_hal: CpuHal<BabyBear> = CpuHal::new(Sha256HashSuite::new_suite());
-        let cpu_eval = CpuCircuitHal::new(&circuit);
-        let gpu_hal = Arc::new(MetalHalSha256::new());
-        let gpu_eval = super::MetalCircuitHal::new(gpu_hal.clone());
-        crate::testutil::eval_check(&cpu_hal, cpu_eval, gpu_hal.as_ref(), gpu_eval, PO2);
-    }
 
     #[test]
-    #[ignore]
-    fn memory_usage() {
-        crate::testutil::EvalCheckParams::new(22);
+    fn constraint_evaluator_matches_cpu_with_offsets_and_reuse() {
+        metal::objc::rc::autoreleasepool(|| {
+            let cpu = CpuHal::<BabyBear>::new(Poseidon2HashSuite::new_suite());
+            let gpu = Arc::new(MetalHalPoseidon2::new());
+            let circuit = MetalCircuitHal::new(gpu.clone()).unwrap();
+            for po2 in [4, 7, 10, 4] {
+                let p = crate::testutil::EvalCheckParams::new(po2);
+                let expected =
+                    crate::testutil::eval_check_impl(&p, &cpu, &super::super::cpu::CpuCircuitHal);
+                // Nonzero offsets on all inputs and output, with sentinels
+                // around the output to detect an out-of-range GPU write.
+                let input = |name, values: &[BabyBearElem]| {
+                    let mut padded = vec![BabyBearElem::new(17); 3];
+                    padded.extend_from_slice(values);
+                    gpu.copy_from_elem(name, &padded).slice(3, values.len())
+                };
+                let ctrl = input("ctrl", &p.code);
+                let data = input("data", &p.data);
+                let accum = input("accum", &p.accum);
+                let mix = input("mix", &p.mix);
+                let out = input("out", &p.out);
+                let sentinel = BabyBearElem::new(42);
+                let storage = gpu.copy_from_elem("check", &vec![sentinel; p.domain * 4 + 6]);
+                let check = storage.slice(3, p.domain * 4);
+                circuit.eval_check(
+                    &check,
+                    &[&accum, &ctrl, &data],
+                    &[&mix, &out],
+                    p.poly_mix,
+                    p.po2,
+                    p.steps,
+                );
+                assert_eq!(check.to_vec(), expected);
+                let full = storage.to_vec();
+                assert!(full[..3]
+                    .iter()
+                    .chain(&full[full.len() - 3..])
+                    .all(|x| *x == sentinel));
+            }
+            assert!(gpu.completed_dispatches() >= 4);
+        });
     }
 }

@@ -13,6 +13,10 @@
 // limitations under the License.
 
 fn main() {
+    #[cfg(feature = "metal")]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        embed_metal();
+    }
     #[cfg(feature = "prove")]
     download_zkr();
 }
@@ -80,4 +84,63 @@ fn download_zkr() {
         let summary: DownloadSummary = result.unwrap();
         eprintln!("{summary}");
     }
+}
+
+// Reuse the circuit's authoritative generated polynomial. A missing or changed
+// wrapper fails the build; no stale evaluator or CPU fallback is substituted.
+#[cfg(feature = "metal")]
+fn embed_metal() {
+    use std::{env, fs, path::PathBuf};
+    let root = PathBuf::from("../recursion-sys/kernels");
+    let cuda = root.join("cuda/eval_check.cu");
+    let wrapper = root.join("metal/eval_check.metal");
+    println!("cargo:rerun-if-changed={}", cuda.display());
+    println!("cargo:rerun-if-changed={}", wrapper.display());
+    let cuda = fs::read_to_string(cuda).unwrap();
+    let function = cuda
+        .split_once("__device__ FpExt poly_fp(")
+        .expect("poly_fp signature changed")
+        .1;
+    let body = function
+        .split_once('{')
+        .unwrap()
+        .1
+        .split_once("\n}")
+        .unwrap()
+        .0;
+    assert!(
+        !body.contains('{') && body.contains("return "),
+        "poly_fp structure changed"
+    );
+    let wrapper = fs::read_to_string(wrapper).unwrap();
+    assert_eq!(wrapper.matches("/* GENERATED_POLY_FP_BODY */").count(), 1);
+    let kernel = wrapper.replace("/* GENERATED_POLY_FP_BODY */", body);
+    let mut source = String::new();
+    for (name, contents) in
+        risc0_build_kernel::metal_headers()
+            .iter()
+            .copied()
+            .chain(std::iter::once((
+                "recursion_eval_check.metal",
+                kernel.as_str(),
+            )))
+    {
+        source.push_str(&format!("\n#line 1 \"{name}\"\n"));
+        for line in contents.lines() {
+            match line.trim() {
+                "#pragma once" | "#include \"fp.h\"" | "#include \"fpext.h\"" => source.push('\n'),
+                s if s.starts_with("#include \"") => panic!("unknown Metal include: {s}"),
+                _ => {
+                    source.push_str(line);
+                    source.push('\n');
+                }
+            }
+        }
+    }
+    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("recursion.metal");
+    fs::write(&output, source).unwrap();
+    println!(
+        "cargo:rustc-env=RECURSION_METAL_SOURCE={}",
+        output.display()
+    );
 }
