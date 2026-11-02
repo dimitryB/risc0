@@ -14,6 +14,11 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(all(feature = "metal", not(all(target_os = "macos", target_arch = "aarch64"))))]
+compile_error!("RV32IM Metal requires Apple Silicon macOS");
+#[cfg(all(feature = "metal", any(feature = "cuda", feature = "rocm", feature = "intel", feature = "metal-hybrid")))]
+compile_error!("RV32IM Metal must be selected separately from other segment backends");
+
 #[cfg(feature = "execute")]
 pub mod execute;
 #[cfg(feature = "prove")]

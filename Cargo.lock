@@ -7066,6 +7066,7 @@ dependencies = [
  "gdbstub",
  "gdbstub_arch",
  "malachite",
+ "metal",
  "num-derive",
  "num-traits",
  "parking_lot",

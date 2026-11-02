@@ -215,6 +215,8 @@ heap-embedded-alloc = ["risc0-zkvm-platform/heap-embedded-alloc"]
 metal = ["prove", "risc0-zkp/metal"]
 # Opt-in Poseidon2 lift/join; CPU witness/accumulation and identity-p254.
 metal-recursion = ["prove", "risc0-circuit-recursion/metal"]
+# Opt-in shared Metal RV32IM transforms/commitments/constraints; CPU witness/accumulation.
+metal-rv32im = ["prove", "risc0-circuit-rv32im/metal"]
 # Opt-in, in-process CPU prover with only segment Poseidon2 Merkle folds on Metal.
 metal-hybrid = ["prove", "risc0-circuit-rv32im/metal-hybrid"]
 prove = [

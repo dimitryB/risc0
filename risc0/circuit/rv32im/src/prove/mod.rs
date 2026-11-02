@@ -25,6 +25,8 @@ use crate::execute::segment::Segment;
 
 pub use risc0_zkp::hal::cpu::MetalFoldStats;
 pub use witgen::PreflightResults;
+#[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+pub use self::hal::metal::{metal_rv32im_stats, metal_rv32im_kernel_source, MetalRv32imStats};
 
 const GLOBAL_MIX: usize = 0;
 const GLOBAL_OUT: usize = 1;
@@ -82,6 +84,16 @@ pub fn release_intel_scratch() {
 }
 
 pub fn segment_prover() -> Result<Box<dyn SegmentProver>> {
+    match std::env::var("RISC0_SEGMENT_HAL").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("cpu") => {},
+        Ok("metal") => {
+            #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+            return self::hal::metal::segment_prover();
+            #[cfg(not(all(feature = "metal", target_os = "macos", target_arch = "aarch64")))]
+            anyhow::bail!("RV32IM Metal is not compiled into this engine");
+        },
+        _ => anyhow::bail!("RISC0_SEGMENT_HAL must be cpu or metal"),
+    }
     cfg_if! {
         if #[cfg(feature = "cuda")] {
             self::hal::cuda::segment_prover()

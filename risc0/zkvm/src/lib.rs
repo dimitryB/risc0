@@ -103,6 +103,13 @@ pub use self::host::client::prove::local::MetalSegmentReport;
 #[cfg(all(feature = "metal-recursion", target_os = "macos", target_arch = "aarch64"))]
 pub use risc0_circuit_recursion::prove::{metal_recursion_stats, metal_recursion_kernel_source, MetalRecursionStats};
 
+#[cfg(all(feature = "metal-rv32im", not(all(target_os = "macos", target_arch = "aarch64"))))]
+compile_error!("metal-rv32im requires Apple Silicon macOS");
+#[cfg(all(feature = "metal-rv32im", any(feature = "cuda", feature = "rocm", feature = "intel", feature = "metal-hybrid")))]
+compile_error!("metal-rv32im must be selected separately from other segment backends");
+#[cfg(all(feature = "metal-rv32im", target_os = "macos", target_arch = "aarch64"))]
+pub use risc0_circuit_rv32im::prove::{metal_rv32im_stats, metal_rv32im_kernel_source, MetalRv32imStats};
+
 #[cfg(not(target_os = "zkvm"))]
 #[cfg(any(feature = "client", feature = "prove"))]
 pub use bytes::Bytes;
