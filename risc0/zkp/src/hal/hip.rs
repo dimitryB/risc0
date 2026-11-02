@@ -14,12 +14,12 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt::Debug,
     marker::PhantomData,
     mem::ManuallyDrop,
     rc::Rc,
-    sync::{Once, OnceLock},
+    sync::{Mutex, MutexGuard, Once, OnceLock},
 };
 
 use anyhow::{bail, Context as _, Result};
@@ -40,7 +40,7 @@ use risc0_sys::{
     },
 };
 
-use super::{tracker, Buffer, Hal};
+use super::{tracker, Buffer, GatherJob, Hal};
 use crate::{
     core::{
         digest::Digest,
@@ -53,8 +53,9 @@ use crate::{
     FRI_FOLD,
 };
 
-/// Thread-local pool of HIP device buffers, keyed by byte size.
+/// A device's pool of freed HIP buffers, keyed by byte size.
 /// Reuses freed buffers to avoid hipMalloc/hipFree overhead.
+#[derive(Default)]
 struct BufferPool {
     cache: HashMap<usize, Vec<HipDeviceBuffer>>,
     total_cached: usize,
@@ -64,13 +65,6 @@ const BUFFER_POOL_MAX_BYTES: usize = 16 << 30; // 16 GB
 const BUFFER_POOL_SMALL_THRESHOLD: usize = 64 << 10; // 64 KB - always pool small buffers
 
 impl BufferPool {
-    fn new() -> Self {
-        Self {
-            cache: HashMap::new(),
-            total_cached: 0,
-        }
-    }
-
     fn pop(&mut self, size: usize) -> Option<HipDeviceBuffer> {
         if let Some(bufs) = self.cache.get_mut(&size) {
             if let Some(buf) = bufs.pop() {
@@ -93,91 +87,202 @@ impl BufferPool {
     }
 }
 
+/// The buffer pools, one per device, shared by every thread: the prover proves segments, keccak
+/// and recursion on different threads, and with a pool per thread, the buffers one thread's
+/// segments left idle could not be released for another's proofs (`clear_buffer_pool`), nor
+/// counted when deciding to (`release_pool_unless_fits`).
+static BUFFER_POOLS: Mutex<BTreeMap<i32, BufferPool>> = Mutex::new(BTreeMap::new());
+
+fn buffer_pools() -> MutexGuard<'static, BTreeMap<i32, BufferPool>> {
+    BUFFER_POOLS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Bytes pooled for this thread's device.
+fn pooled_bytes() -> usize {
+    buffer_pools()
+        .get(&get_device_for_thread())
+        .map_or(0, |pool| pool.total_cached)
+}
+
 thread_local! {
-    static BUFFER_POOL: RefCell<BufferPool> = RefCell::new(BufferPool::new());
     /// Which HIP device this thread should use (default 0).
     static THREAD_DEVICE: Cell<i32> = Cell::new(0);
 }
 
-/// Auto-configure HSA_ENABLE_SDMA based on detected GPU architecture.
+/// Auto-configure GPU_MAX_HW_QUEUES (and the scratch and prefetch settings below) based on the
+/// visible GPU architectures.
 ///
-/// RDNA4 (gfx12xx) has buggy SDMA and benefits from HSA_ENABLE_SDMA=0.
-/// RDNA3 (gfx11xx) has working SDMA and is ~7% slower with it disabled.
-/// This must run BEFORE hipInit() since HSA reads the env var during init.
+/// After a long kernel whose grid needs several rounds of waves, the next
+/// dispatch on the same hardware queue starts ~200 us late. On RDNA3 (gfx11xx)
+/// the delay goes away once the device has at least 9 compute queues (8 per
+/// process plus the runtime's own); on RDNA4 (gfx12xx) the queue count doesn't
+/// change it and a single queue is fastest.
 ///
-/// Reads GPU architectures from Linux sysfs without requiring HIP runtime.
-/// Respects any user-set HSA_ENABLE_SDMA value.
-fn auto_configure_sdma() {
+/// HSA_ENABLE_SDMA is left alone: with ROCm 7, HSA_ENABLE_SDMA=0 is slower on
+/// RDNA4 too.
+///
+/// This must run BEFORE the first HIP call since HIP reads the env var during
+/// init. Reads GPU architectures from Linux sysfs without requiring HIP
+/// runtime. Respects any user-set value.
+pub fn auto_configure_hw_queues() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        // Don't override if user explicitly set it.
-        if std::env::var("HSA_ENABLE_SDMA").is_ok() {
-            return;
-        }
-
-        // Parse HIP_VISIBLE_DEVICES to know which GPUs are active.
-        let visible: Option<Vec<usize>> = std::env::var("HIP_VISIBLE_DEVICES").ok().map(|val| {
-            val.split(',')
-                .filter_map(|s| s.trim().parse().ok())
-                .collect()
-        });
-
         // Read GPU architectures from sysfs (works without HIP runtime).
-        // /sys/class/kfd/kfd/topology/nodes/*/properties has gfx_target_version.
-        // Node 0 is typically the CPU, GPU nodes start at 1+.
-        let mut gpu_index: usize = 0;
-        let mut all_rdna4 = true;
-        let mut found_gpu = false;
-
+        // /sys/class/kfd/kfd/topology/nodes/*/properties has gfx_target_version
+        // and unique_id. CPU nodes have version 0.
         let Ok(entries) = std::fs::read_dir("/sys/class/kfd/kfd/topology/nodes") else {
             return;
         };
         let mut node_dirs: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-        node_dirs.sort_by_key(|e| e.file_name());
+        node_dirs.sort_by_key(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .parse::<u32>()
+                .unwrap_or(u32::MAX)
+        });
 
+        // (gfx_target_version, unique_id, scratch wave slots, VRAM bytes) of each GPU node, in
+        // node order.
+        let mut gpus: Vec<(u32, u64, u64, u64)> = Vec::new();
         for entry in node_dirs {
             let props_path = entry.path().join("properties");
             let Ok(content) = std::fs::read_to_string(&props_path) else {
                 continue;
             };
-
-            // Find gfx_target_version line. CPU nodes have version 0.
-            let gfx_version = content.lines().find_map(|line| {
-                let line = line.trim();
-                if line.starts_with("gfx_target_version") {
-                    line.split_whitespace().nth(1)?.parse::<u32>().ok()
-                } else {
-                    None
-                }
-            });
-
-            let Some(ver) = gfx_version else { continue };
+            let prop = |name: &str| {
+                content.lines().find_map(|line| {
+                    let mut it = line.split_whitespace();
+                    if it.next()? != name {
+                        return None;
+                    }
+                    it.next()?.parse::<u64>().ok()
+                })
+            };
+            let Some(ver) = prop("gfx_target_version") else {
+                continue;
+            };
             if ver == 0 {
                 continue; // CPU node
             }
-
-            // This is a GPU node. Check if it's in the visible set.
-            let is_visible = match &visible {
-                Some(vis) => vis.contains(&gpu_index),
-                None => true,
+            // ROCr's scratch wave slots: CUs x max_slots_scratch_cu.
+            let slots = match (
+                prop("simd_count"),
+                prop("simd_per_cu"),
+                prop("max_slots_scratch_cu"),
+            ) {
+                (Some(s), Some(p), Some(m)) if p > 0 => s / p * m,
+                _ => 0,
             };
-
-            if is_visible {
-                found_gpu = true;
-                // gfx12xx = 120000..129999 (RDNA4)
-                if ver < 120000 || ver >= 130000 {
-                    all_rdna4 = false;
-                }
-            }
-
-            gpu_index += 1;
+            gpus.push((
+                ver as u32,
+                prop("unique_id").unwrap_or(0),
+                slots,
+                node_vram_bytes(&entry.path()),
+            ));
         }
 
-        if found_gpu && all_rdna4 {
-            tracing::info!("Auto-setting HSA_ENABLE_SDMA=0 for RDNA4 GPU(s)");
-            std::env::set_var("HSA_ENABLE_SDMA", "0");
+        // ROCR_VISIBLE_DEVICES (indices or GPU-<hex unique_id>) selects and
+        // orders the GPUs; HIP_VISIBLE_DEVICES then indexes into that list.
+        let mut visible = match std::env::var("ROCR_VISIBLE_DEVICES") {
+            Ok(val) => val
+                .split(',')
+                .filter_map(|s| {
+                    let s = s.trim();
+                    match s.strip_prefix("GPU-") {
+                        Some(hex) => {
+                            let id = u64::from_str_radix(hex, 16).ok()?;
+                            gpus.iter().find(|g| g.1 == id && id != 0).copied()
+                        }
+                        None => gpus.get(s.parse::<usize>().ok()?).copied(),
+                    }
+                })
+                .collect(),
+            Err(_) => gpus,
+        };
+        if let Ok(val) = std::env::var("HIP_VISIBLE_DEVICES") {
+            visible = val
+                .split(',')
+                .filter_map(|s| visible.get(s.trim().parse::<usize>().ok()?).copied())
+                .collect();
+        }
+
+        let all_in = |range: std::ops::Range<u32>| {
+            !visible.is_empty() && visible.iter().all(|g| range.contains(&g.0))
+        };
+        // gfx12xx = 120000..129999 (RDNA4), gfx11xx = 110000..119999 (RDNA3)
+        let queues = if all_in(120000..130000) {
+            "1"
+        } else if all_in(110000..120000) {
+            "8"
+        } else {
+            return;
+        };
+        if std::env::var("GPU_MAX_HW_QUEUES").is_err() {
+            tracing::info!("Auto-setting GPU_MAX_HW_QUEUES={queues}");
+            std::env::set_var("GPU_MAX_HW_QUEUES", queues);
+        }
+
+        // ROCr gives a dispatch "use-once" scratch (allocated before it, freed after it, and the
+        // queue's retained scratch released too) when its scratch for all of the device's wave
+        // slots (bytes/lane x 32 lanes x slots) is above HSA_SCRATCH_SINGLE_LIMIT (default
+        // 140 MiB). The recursion witgen's parStepExecPerm (3232 B/lane: 303 / 202 MiB on an
+        // RX 7900 XTX / RX 9070 XT) did that once per lift/join, and it and the next scratch
+        // kernels (stepVerifyWom, the accum passes) each waited ~110 us for an allocation. A
+        // limit of 4 KiB/lane keeps those retained (at most that much per hardware queue, within
+        // ROCr's pool limits); the rv32im and keccak witgen kernels (4.5-78 KB/lane) stay
+        // use-once. RDNA3 only: on an RX 9070 XT it made fib 1M succinct ~0.2 s slower.
+        if queues == "8" && std::env::var("HSA_SCRATCH_SINGLE_LIMIT").is_err() {
+            if let Some(slots) = visible.iter().map(|g| g.2).max().filter(|&s| s > 0) {
+                let limit = slots * 32 * 4096;
+                tracing::info!("Auto-setting HSA_SCRATCH_SINGLE_LIMIT={limit}");
+                std::env::set_var("HSA_SCRATCH_SINGLE_LIMIT", limit.to_string());
+            }
+        }
+        // RDNA4: start the next segment's preflight copy at a commit's row hashes rather than in
+        // front of eval_check (RISC0_HIP_PREFETCH_ROWS, read by the rv32im HAL): beside the copy
+        // every short kernel of eval_check's prologue takes ~125 us instead of ~2 us.
+        if queues == "1" && std::env::var("RISC0_HIP_PREFETCH_ROWS").is_err() {
+            tracing::info!("Auto-setting RISC0_HIP_PREFETCH_ROWS=1");
+            std::env::set_var("RISC0_HIP_PREFETCH_ROWS", "1");
+        }
+        // Scratch kept per queue between dispatches: the runtime frees a queue's scratch after
+        // each dispatch with a large scratch need (rv32im par_stepExec x2, stepAccumA and
+        // ef_eval_split each segment: ~1 GB / 0.5 GB / 0.3 GB on an RX 7900 XTX), and the next
+        // such dispatch waits for it to be allocated again (~0.1-0.3 ms each on a quiet host, a
+        // runtime thread's wake-up on a busy one). RISC0_HIP_SCRATCH_KEEP=1 sets
+        // HSA_NO_SCRATCH_RECLAIM=1 (the largest scratch each queue used stays allocated, ~1.5 GB);
+        // default: on when every visible GPU has at least 20 GiB of VRAM.
+        let keep = match std::env::var("RISC0_HIP_SCRATCH_KEEP").as_deref() {
+            Ok(v) => v.starts_with('1'),
+            Err(_) => visible.iter().all(|g| g.3 >= 20 << 30),
+        };
+        if keep && std::env::var("HSA_NO_SCRATCH_RECLAIM").is_err() {
+            tracing::info!("Auto-setting HSA_NO_SCRATCH_RECLAIM=1");
+            std::env::set_var("HSA_NO_SCRATCH_RECLAIM", "1");
         }
     });
+}
+
+/// VRAM of a KFD topology node: its frame-buffer memory banks (heap_type 1 public, 2 private).
+fn node_vram_bytes(node: &std::path::Path) -> u64 {
+    let Ok(banks) = std::fs::read_dir(node.join("mem_banks")) else {
+        return 0;
+    };
+    banks
+        .filter_map(|b| std::fs::read_to_string(b.ok()?.path().join("properties")).ok())
+        .filter_map(|content| {
+            let prop = |name: &str| {
+                content.lines().find_map(|line| {
+                    let mut it = line.split_whitespace();
+                    if it.next()? != name {
+                        return None;
+                    }
+                    it.next()?.parse::<u64>().ok()
+                })
+            };
+            matches!(prop("heap_type"), Some(1 | 2)).then(|| prop("size_in_bytes").unwrap_or(0))
+        })
+        .sum()
 }
 
 /// Set the HIP device ID for the current thread.
@@ -189,6 +294,7 @@ pub fn set_device_for_thread(device_id: i32) {
 /// Switch the current thread to a different HIP device.
 /// Calls both the Rust thread-local and the HIP runtime hipSetDevice.
 pub fn switch_to_device(device_id: i32) {
+    auto_configure_hw_queues();
     set_device_for_thread(device_id);
     hip_check(unsafe { hipSetDevice(device_id) });
 }
@@ -200,6 +306,7 @@ pub fn get_device_for_thread() -> i32 {
 
 /// Return the number of HIP devices available.
 pub fn device_count() -> i32 {
+    auto_configure_hw_queues();
     let mut count: i32 = 0;
     let err = unsafe { hipGetDeviceCount(&mut count) };
     if err == risc0_sys::hip::HIP_SUCCESS {
@@ -223,17 +330,175 @@ pub fn recursion_device() -> Option<i32> {
     })
 }
 
+/// The batched NTT kernels of `ntt_x.cuh`/`ntt_q.cuh` (fused commit, expand+NTT, bit reversal).
+/// `RISC0_HIP_NTT=0` falls back to sppark's per-pass NTTs; the kernels read the same variable.
+fn hip_fast_ntt() -> bool {
+    static FAST: OnceLock<bool> = OnceLock::new();
+    *FAST.get_or_init(
+        || !matches!(std::env::var("RISC0_HIP_NTT").as_deref(), Ok(v) if v.starts_with('0')),
+    )
+}
+
 /// Release all cached GPU buffers back to the HIP runtime.
 ///
-/// The HAL keeps a thread-local pool of freed GPU buffers for reuse.
-/// Call this before operations that need the maximum available VRAM
-/// (e.g. Groth16 BN254 proving via sppark which uses its own allocator).
+/// The HAL keeps a pool of freed GPU buffers per device for reuse. Call this before operations
+/// that need the maximum available VRAM (e.g. Groth16 BN254 proving via sppark which uses its own
+/// allocator). Releases every device's pool.
 pub fn clear_buffer_pool() {
-    BUFFER_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        pool.cache.clear();
-        pool.total_cached = 0;
-    });
+    release_buffer_pools(false);
+}
+
+/// The pools and, through the release hooks (`device_only`: see [register_release_hook]), the
+/// caches the circuit crates keep outside them.
+fn release_buffer_pools(device_only: bool) {
+    run_release_hooks(device_only);
+    // Take the pools out first, so the hipFrees run without the lock held.
+    let pools = std::mem::take(&mut *buffer_pools());
+    drop(pools);
+    release_prefilled();
+}
+
+/// A pooled buffer refilled in the background for a later `alloc_elem_init` of the same size and
+/// value ([HipHal::prefill_elem]): the fill runs on a side hardware queue beside the kernels then
+/// in flight instead of in front of the allocation's first use.
+struct Prefilled {
+    device: i32,
+    bytes: usize,
+    value: u32,
+    buf: HipDeviceBuffer,
+    /// The fill's completion event (hipEvent_t), 0 if it was queued on the persistent stream.
+    done: usize,
+}
+
+static PREFILLED: Mutex<Vec<Prefilled>> = Mutex::new(Vec::new());
+
+extern "C" {
+    fn risc0_zkp_hip_fill_fork(
+        buf: DevicePointer<u8>,
+        value: u32,
+        count: usize,
+        done: *mut *mut std::os::raw::c_void,
+    ) -> *const std::os::raw::c_char;
+    fn risc0_zkp_hip_fill_join(
+        done: *mut std::os::raw::c_void,
+        host: u32,
+    ) -> *const std::os::raw::c_char;
+}
+
+/// `RISC0_HIP_PREFILL=0` turns [HipHal::prefill_elem] off.
+fn prefill_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(
+        || !matches!(std::env::var("RISC0_HIP_PREFILL").as_deref(), Ok(v) if v.starts_with('0')),
+    )
+}
+
+fn prefilled() -> MutexGuard<'static, Vec<Prefilled>> {
+    PREFILLED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Bytes held prefilled for this thread's device.
+fn prefilled_bytes() -> usize {
+    let device = get_device_for_thread();
+    prefilled()
+        .iter()
+        .filter(|p| p.device == device)
+        .map(|p| p.bytes)
+        .sum()
+}
+
+/// Free every prefilled buffer (after its fill completes): they are pooled memory.
+fn release_prefilled() {
+    let all = std::mem::take(&mut *prefilled());
+    for p in all {
+        ffi_wrap(|| unsafe { risc0_zkp_hip_fill_join(p.done as *mut _, 1) }).unwrap();
+        drop(p.buf);
+    }
+}
+
+/// A prefilled buffer of `bytes` filled with `value` on this thread's device, with the persistent
+/// stream ordered after its fill.
+fn take_prefilled(bytes: usize, value: u32) -> Option<HipDeviceBuffer> {
+    let device = get_device_for_thread();
+    let p = {
+        let mut all = prefilled();
+        let i = all
+            .iter()
+            .position(|p| p.device == device && p.bytes == bytes && p.value == value)?;
+        all.remove(i)
+    };
+    ffi_wrap(|| unsafe { risc0_zkp_hip_fill_join(p.done as *mut _, 0) }).unwrap();
+    Some(p.buf)
+}
+
+/// Caches kept outside this HAL's pool by the circuit crates: device scratch of their kernel
+/// libraries, and host staging pools (pinned buffers, recycled trace vectors).
+static RELEASE_HOOKS: Mutex<Vec<fn(bool)>> = Mutex::new(Vec::new());
+
+/// Register `hook` (once) to release a cache that `clear_buffer_pool` cannot see, as
+/// `hal::cuda::register_release_hook`: called with `device_only = false` by [clear_buffer_pool],
+/// and with `device_only = true` when an allocation fails or would not fit mid-proof (free
+/// device memory not in use right now). It must not block on locks its own code may hold around
+/// a device allocation (use `try_lock`).
+pub fn register_release_hook(hook: fn(bool)) {
+    let mut hooks = RELEASE_HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+    if !hooks.iter().any(|h| std::ptr::fn_addr_eq(*h, hook)) {
+        hooks.push(hook);
+    }
+}
+
+/// Run by the Poseidon2 `hash_rows` before it launches the row hashes (one long kernel at the
+/// sizes that matter), once the persistent stream is idle: see [register_hash_rows_hook].
+static HASH_ROWS_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Register `hook` (the first registration wins) to run at the start of each Poseidon2
+/// `hash_rows`, on the proving thread: work it queues on another stream (a DMA) overlaps the row
+/// hashes instead of the short latency-bound kernels around them.
+pub fn register_hash_rows_hook(hook: fn()) {
+    let _ = HASH_ROWS_HOOK.set(hook);
+}
+
+fn run_release_hooks(device_only: bool) {
+    let hooks = RELEASE_HOOKS
+        .try_lock()
+        .map(|h| h.clone())
+        .unwrap_or_default();
+    for hook in hooks {
+        hook(device_only);
+    }
+}
+
+/// Called by raw device allocations in the kernel libraries (`risc0_cuda_malloc` in
+/// `device_alloc.h`: the rv32im preflight slots, nttq scratch) when hipMalloc fails: releases the
+/// pools, so the allocation can be retried, as `RawBuffer::new` does for the HAL's own.
+extern "C" fn drain_pool_on_oom() {
+    let _ = std::panic::catch_unwind(|| release_buffer_pools(true));
+}
+
+/// Room to leave on the device beyond a new allocation before the pool is kept.
+const POOL_RELEASE_HEADROOM: usize = 256 << 20;
+
+/// Release the buffer pool if a new `size`-byte allocation would not fit in free device memory.
+///
+/// Waiting for hipMalloc to fail is not enough on Windows: there the driver backs an allocation
+/// beyond the card's memory with shared system memory instead of failing, so a pool of buffers
+/// kept from a large segment pushes every later allocation of another size off the card, and the
+/// kernels using it then run several times slower.
+fn release_pool_unless_fits(size: usize) {
+    if size < BUFFER_POOL_SMALL_THRESHOLD {
+        return;
+    }
+    let pooled = pooled_bytes() + prefilled_bytes();
+    if pooled == 0 {
+        return;
+    }
+    let mut free: usize = 0;
+    let mut total: usize = 0;
+    let err = unsafe { risc0_sys::hip::hipMemGetInfo(&mut free, &mut total) };
+    if err == risc0_sys::hip::HIP_SUCCESS && free < size.saturating_add(POOL_RELEASE_HEADROOM) {
+        tracing::debug!("releasing {pooled} pooled bytes: {size} requested, {free} free");
+        release_buffer_pools(true);
+    }
 }
 
 // Per-device locks: prevents concurrent provers on the SAME device.
@@ -378,6 +643,9 @@ impl HipHash for HipHashPoseidon2 {
         assert_eq!(matrix.size(), col_size * row_size);
 
         sync_persistent_stream();
+        if let Some(hook) = HASH_ROWS_HOOK.get() {
+            hook();
+        }
         let err = unsafe {
             sppark_poseidon2_rows(
                 output.as_device_ptr(),
@@ -463,6 +731,8 @@ pub type HipHalPoseidon254 = HipHal<HipHashPoseidon254>;
 
 struct RawBuffer {
     name: &'static str,
+    /// The device it was allocated on, whose pool it returns to.
+    device: i32,
     buf: ManuallyDrop<HipDeviceBuffer>,
 }
 
@@ -470,25 +740,29 @@ impl RawBuffer {
     pub fn new(name: &'static str, size: usize) -> Self {
         tracing::trace!("alloc: {size} bytes, {name}");
         tracker().lock().unwrap().alloc(size);
-        let buf = BUFFER_POOL
-            .with(|pool| pool.borrow_mut().pop(size))
-            .unwrap_or_else(|| {
-                HipDeviceBuffer::uninitialized(size).unwrap_or_else(|_| {
-                    // OOM: clear the buffer pool to free cached GPU memory and retry.
-                    clear_buffer_pool();
-                    // Clear the stale HIP error from the failed hipMalloc above.
-                    // Without this, sppark's cudaGetLastError() picks up the old
-                    // "out of memory" error and panics even though the retry succeeds.
-                    unsafe {
-                        risc0_sys::hip::hipGetLastError();
-                    }
-                    HipDeviceBuffer::uninitialized(size)
-                        .context(format!("allocation failed on {name}: {size} bytes"))
-                        .unwrap()
-                })
-            });
+        let device = get_device_for_thread();
+        let pooled = buffer_pools()
+            .get_mut(&device)
+            .and_then(|pool| pool.pop(size));
+        let buf = pooled.unwrap_or_else(|| {
+            release_pool_unless_fits(size);
+            HipDeviceBuffer::uninitialized(size).unwrap_or_else(|_| {
+                // OOM: clear the buffer pool to free cached GPU memory and retry.
+                release_buffer_pools(true);
+                // Clear the stale HIP error from the failed hipMalloc above.
+                // Without this, sppark's cudaGetLastError() picks up the old
+                // "out of memory" error and panics even though the retry succeeds.
+                unsafe {
+                    risc0_sys::hip::hipGetLastError();
+                }
+                HipDeviceBuffer::uninitialized(size)
+                    .context(format!("allocation failed on {name}: {size} bytes"))
+                    .unwrap()
+            })
+        });
         Self {
             name,
+            device,
             buf: ManuallyDrop::new(buf),
         }
     }
@@ -508,16 +782,10 @@ impl Drop for RawBuffer {
         // Safety: self.buf is not accessed after take() since we're in Drop,
         // and ManuallyDrop's own drop is a no-op.
         let buf = unsafe { ManuallyDrop::take(&mut self.buf) };
-        // During thread shutdown, TLS may already be destroyed. Use try_with
-        // to gracefully handle this — if the pool is gone, just drop the buffer
-        // directly (hipFree via HipDeviceBuffer's own Drop).
-        match BUFFER_POOL.try_with(|pool| pool.borrow_mut().push(size, buf)) {
-            Ok(()) => {}
-            Err(_) => {
-                // TLS destroyed; closure was never called, so `buf` (captured
-                // by the closure) drops here via HipDeviceBuffer::drop (hipFree).
-            }
-        }
+        buffer_pools()
+            .entry(self.device)
+            .or_default()
+            .push(size, buf);
     }
 }
 
@@ -582,6 +850,29 @@ impl<T> BufferImpl<T> {
             offset: 0,
             marker: PhantomData,
         }
+    }
+
+    /// Upload `data` over the whole buffer, without downloading it first as `view_mut` does.
+    /// Returns once the copy is done, so `data` may be freed.
+    pub fn copy_from_host(&self, data: &[T]) {
+        assert_eq!(data.len(), self.size, "copy_from_host: size mismatch");
+        extern "C" {
+            fn risc0_zkp_cuda_memcpy_h2d(
+                dst: *mut std::os::raw::c_void,
+                src: *const std::os::raw::c_void,
+                size: usize,
+            ) -> *const std::os::raw::c_char;
+        }
+        let bytes: &[u8] = unchecked_cast(data);
+        ffi_wrap(|| unsafe {
+            risc0_zkp_cuda_memcpy_h2d(
+                self.as_device_ptr().0 as *mut std::os::raw::c_void,
+                bytes.as_ptr() as *const std::os::raw::c_void,
+                bytes.len(),
+            )
+        })
+        .unwrap();
+        sync_persistent_stream();
     }
 
     pub fn as_device_ptr(&self) -> DevicePointer<u8> {
@@ -677,8 +968,8 @@ impl<HH: HipHash + ?Sized> HipHal<HH> {
         let device = get_device_for_thread();
         let _lock = singleton_for_device(device).lock();
 
-        // Auto-configure SDMA before HIP runtime init reads env vars.
-        auto_configure_sdma();
+        // Auto-configure HW queues before HIP runtime init reads env vars.
+        auto_configure_hw_queues();
 
         // Set device BEFORE sppark_init so NTT tables land on the right GPU.
         hip_check(unsafe { hipInit(0) });
@@ -688,6 +979,8 @@ impl<HH: HipHash + ?Sized> HipHal<HH> {
         if err.code != 0 {
             panic!("Failure during sppark_init: {err}");
         }
+        static OOM_HOOK: Once = Once::new();
+        OOM_HOOK.call_once(|| unsafe { risc0_zkp_cuda_set_oom_hook(drain_pool_on_oom) });
 
         let mut max_threads: i32 = 0;
         hip_check(unsafe {
@@ -799,6 +1092,21 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
         size: usize,
         value: Self::Elem,
     ) -> Self::Buffer<Self::Elem> {
+        let bytes = size * std::mem::size_of::<Self::Elem>();
+        if let Some(buf) = take_prefilled(bytes, value.as_u32_montgomery()) {
+            tracing::trace!("alloc: {bytes} bytes, {name} (prefilled)");
+            tracker().lock().unwrap().alloc(bytes);
+            return BufferImpl {
+                buffer: Rc::new(RefCell::new(RawBuffer {
+                    name,
+                    device: get_device_for_thread(),
+                    buf: ManuallyDrop::new(buf),
+                })),
+                size,
+                offset: 0,
+                marker: PhantomData,
+            };
+        }
         let buffer = self.alloc_elem(name, size);
         // Use async fill on persistent stream to avoid device-wide sync from hipMemsetD32.
         extern "C" {
@@ -817,6 +1125,50 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
         })
         .unwrap();
         buffer
+    }
+
+    fn prefill_elem(&self, size: usize, value: Self::Elem) {
+        if !prefill_enabled() {
+            return;
+        }
+        let bytes = size * std::mem::size_of::<Self::Elem>();
+        let value = value.as_u32_montgomery();
+        let device = get_device_for_thread();
+        let mut all = prefilled();
+        if all
+            .iter()
+            .any(|p| p.device == device && p.bytes == bytes && p.value == value)
+        {
+            return;
+        }
+        // Only memory the pool already holds (a buffer just freed): never a new allocation.
+        let Some(buf) = buffer_pools()
+            .get_mut(&device)
+            .and_then(|pool| pool.pop(bytes))
+        else {
+            return;
+        };
+        let mut done: *mut std::os::raw::c_void = std::ptr::null_mut();
+        ffi_wrap(|| unsafe {
+            risc0_zkp_hip_fill_fork(buf.as_device_ptr(), value, size, &mut done)
+        })
+        .unwrap();
+        all.push(Prefilled {
+            device,
+            bytes,
+            value,
+            buf,
+            done: done as usize,
+        });
+        // Keep a few: older ones (another po2) go back to the pool.
+        let mine = all.iter().filter(|p| p.device == device).count();
+        if mine > 4 {
+            let i = all.iter().position(|p| p.device == device).unwrap();
+            let p = all.remove(i);
+            drop(all);
+            ffi_wrap(|| unsafe { risc0_zkp_hip_fill_join(p.done as *mut _, 1) }).unwrap();
+            buffer_pools().entry(device).or_default().push(p.bytes, p.buf);
+        }
     }
 
     fn copy_from_elem(&self, name: &'static str, slice: &[Self::Elem]) -> Self::Buffer<Self::Elem> {
@@ -972,6 +1324,7 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
                 shared_size: u32,
                 kernel_count: u32,
                 count: u32,
+                eval_count: u32,
             ) -> *const std::os::raw::c_char;
         }
 
@@ -984,6 +1337,7 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
                 shared_size,
                 kernel_count as u32,
                 count as u32,
+                eval_count as u32,
             )
         })
         .unwrap();
@@ -1019,6 +1373,46 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
         .unwrap();
     }
 
+    fn gather_samples(
+        &self,
+        dst: &Self::Buffer<Self::Elem>,
+        src: &Self::Buffer<Self::Elem>,
+        indices: &[usize],
+        size: usize,
+        stride: usize,
+    ) {
+        if indices.len() < 2 {
+            for (q, &idx) in indices.iter().enumerate() {
+                self.gather_sample(&dst.slice(q * size, size), src, idx, size, stride);
+            }
+            return;
+        }
+        let idxs: Vec<u32> = indices.iter().map(|&i| i as u32).collect();
+        // As on CUDA: copy_from is a synchronous copy on the legacy stream, which waits for the
+        // (blocking) persistent stream, so idx_buf can go back to the pool after the launch.
+        let idx_buf = self.copy_from_u32("gather_idx", &idxs);
+        extern "C" {
+            fn risc0_zkp_cuda_gather_samples(
+                dst: DevicePointer<u8>,
+                src: DevicePointer<u8>,
+                idxs: DevicePointer<u8>,
+                n: u32,
+                size: u32,
+                stride: u32,
+            ) -> *const std::os::raw::c_char;
+        }
+        ffi_wrap(|| unsafe {
+            risc0_zkp_cuda_gather_samples(
+                dst.as_device_ptr(),
+                src.as_device_ptr(),
+                idx_buf.as_device_ptr(),
+                idxs.len() as u32,
+                size as u32,
+                stride as u32,
+            )
+        })
+        .unwrap();
+    }
     fn has_unified_memory(&self) -> bool {
         false
     }
@@ -1029,7 +1423,7 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
         let err = unsafe { risc0_sys::hip::hipMemGetInfo(&mut free, &mut total) };
         if err == risc0_sys::hip::HIP_SUCCESS {
             // Add pool contents to free count, since those are reclaimable.
-            let pool_bytes = BUFFER_POOL.with(|pool| pool.borrow().total_cached);
+            let pool_bytes = pooled_bytes();
             free + pool_bytes
         } else {
             usize::MAX
@@ -1045,6 +1439,94 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
         } else {
             usize::MAX
         }
+    }
+
+    fn gather_multi(&self, jobs: &[GatherJob<'_, Self>]) -> Option<Vec<(Vec<Self::Elem>, Vec<Digest>)>> {
+        // RISC0_HIP_GATHER_MULTI=0: one round trip per gather, as before.
+        static ON: OnceLock<bool> = OnceLock::new();
+        if !*ON.get_or_init(|| {
+            !matches!(std::env::var("RISC0_HIP_GATHER_MULTI").as_deref(), Ok(v) if v.starts_with('0'))
+        }) {
+            return None;
+        }
+        // One index upload, every gather kernel into one output buffer, one download: per job,
+        // its rows then its node indices; its samples then its digests (8 words each).
+        let mut idx: Vec<u32> = Vec::new();
+        let mut layout = Vec::with_capacity(jobs.len());
+        let mut words = 0usize;
+        for j in jobs {
+            let ri = idx.len();
+            idx.extend(j.rows.iter().map(|&r| r as u32));
+            let ni = idx.len();
+            idx.extend(j.node_indices.iter().map(|&k| k as u32));
+            let so = words;
+            words += j.rows.len() * j.col_size;
+            let dofs = words;
+            words += j.node_indices.len() * 8;
+            layout.push((ri, ni, so, dofs));
+        }
+        if idx.is_empty() || words == 0 {
+            return None;
+        }
+        extern "C" {
+            fn risc0_zkp_cuda_gather_samples(
+                dst: DevicePointer<u8>,
+                src: DevicePointer<u8>,
+                idxs: DevicePointer<u8>,
+                n: u32,
+                size: u32,
+                stride: u32,
+            ) -> *const std::os::raw::c_char;
+            fn risc0_zkp_cuda_gather_digests(
+                dst: DevicePointer<u8>,
+                src: DevicePointer<u8>,
+                indices: DevicePointer<u8>,
+                count: u32,
+            ) -> *const std::os::raw::c_char;
+        }
+        let idx_buf = self.copy_from_u32("gather_multi_idx", &idx);
+        let out: BufferImpl<u32> = BufferImpl::new("gather_multi_out", words);
+        for (j, &(ri, ni, so, dofs)) in jobs.iter().zip(&layout) {
+            if !j.rows.is_empty() && j.col_size > 0 {
+                ffi_wrap(|| unsafe {
+                    risc0_zkp_cuda_gather_samples(
+                        out.as_device_ptr_with_offset(so),
+                        j.matrix.as_device_ptr(),
+                        idx_buf.as_device_ptr_with_offset(ri),
+                        j.rows.len() as u32,
+                        j.col_size as u32,
+                        j.row_size as u32,
+                    )
+                })
+                .unwrap();
+            }
+            if !j.node_indices.is_empty() {
+                ffi_wrap(|| unsafe {
+                    risc0_zkp_cuda_gather_digests(
+                        out.as_device_ptr_with_offset(dofs),
+                        j.nodes.as_device_ptr(),
+                        idx_buf.as_device_ptr_with_offset(ni),
+                        j.node_indices.len() as u32,
+                    )
+                })
+                .unwrap();
+            }
+        }
+        // The download (legacy stream) follows the kernels on the blocking persistent stream.
+        let host = out.to_vec();
+        drop(idx_buf);
+        Some(
+            jobs.iter()
+                .zip(&layout)
+                .map(|(j, &(_, _, so, dofs))| {
+                    let cols: &[BabyBearElem] =
+                        unchecked_cast(&host[so..so + j.rows.len() * j.col_size]);
+                    let digests: &[Digest] =
+                        unchecked_cast(&host[dofs..dofs + j.node_indices.len() * 8]);
+                    (cols.to_vec(), digests.to_vec())
+                })
+                .collect(),
+        )
     }
 
     fn batch_get_digest_at(&self, buf: &Self::Buffer<Digest>, indices: &[usize]) -> Vec<Digest> {
@@ -1116,6 +1598,42 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
         };
         if err.code != 0 {
             panic!("Failure during batch_iNTT_zk_shift: {err}");
+        }
+    }
+
+    fn has_commit_coeffs_lde(&self, po2: usize) -> bool {
+        // The range sppark_commit_coeffs_lde is verified bit-exact for on gfx1100 and gfx1201.
+        hip_fast_ntt() && (10..=23).contains(&po2)
+    }
+
+    fn commit_coeffs_lde(
+        &self,
+        coeffs: &Self::Buffer<Self::Elem>,
+        evaluated: &Self::Buffer<Self::Elem>,
+        witness: &Self::Buffer<Self::Elem>,
+        count: usize,
+    ) {
+        let row_size = witness.size() / count;
+        assert_eq!(row_size * count, witness.size());
+        assert_eq!(coeffs.size(), witness.size());
+        let n_bits = log2_ceil(row_size);
+        assert_eq!(row_size, 1 << n_bits);
+        let lg_blowup = log2_ceil(crate::INV_RATE);
+        assert_eq!(evaluated.size(), witness.size() << lg_blowup);
+        assert!(n_bits + lg_blowup < Self::Elem::MAX_ROU_PO2);
+        Self::sync_stream();
+        let err = unsafe {
+            sppark_commit_coeffs_lde(
+                coeffs.as_device_ptr(),
+                evaluated.as_device_ptr(),
+                witness.as_device_ptr(),
+                n_bits as u32,
+                lg_blowup as u32,
+                count as u32,
+            )
+        };
+        if err.code != 0 {
+            panic!("Failure during commit_coeffs_lde: {err}");
         }
     }
 
@@ -1435,39 +1953,47 @@ impl<HH: HipHash + ?Sized> Hal for HipHal<HH> {
         reg_combo_ids: &[u32],
         mix: &Self::ExtElem,
     ) {
-        let coeff_u = self.copy_from_extelem("coeff_u", coeff_u);
-        let combo_count = combo_count as u32;
-        let cycles = cycles as u32;
-        let regs_count = reg_sizes.len() as u32;
-        let reg_sizes = self.copy_from_u32("reg_sizes", reg_sizes);
-        let reg_combo_ids = self.copy_from_u32("reg_combo_ids", reg_combo_ids);
-        let mix = self.copy_from_extelem("mix", &[*mix]);
-
+        // As on CUDA: compute the per-element deltas on the host (coeff_u is host data) and
+        // apply them with one small parallel kernel, instead of a single-thread device loop. The
+        // temporaries are freed after the async launch; see gather_samples.
+        let mut deltas: std::collections::BTreeMap<u32, Self::ExtElem> =
+            std::collections::BTreeMap::new();
+        let mut cur = Self::ExtElem::ONE;
+        let mut pos = 0usize;
+        for (size, combo_id) in reg_sizes.iter().zip(reg_combo_ids.iter()) {
+            for j in 0..*size as usize {
+                let off = (cycles * *combo_id as usize + j) as u32;
+                let e = deltas.entry(off).or_insert(Self::ExtElem::ZERO);
+                *e += cur * coeff_u[pos + j];
+            }
+            cur *= *mix;
+            pos += *size as usize;
+        }
+        for _ in 0..Self::CHECK_SIZE {
+            let off = (cycles * combo_count) as u32;
+            let e = deltas.entry(off).or_insert(Self::ExtElem::ZERO);
+            *e += cur * coeff_u[pos];
+            pos += 1;
+            cur *= *mix;
+        }
+        let offs: Vec<u32> = deltas.keys().copied().collect();
+        let vals: Vec<Self::ExtElem> = deltas.values().copied().collect();
+        let offs_buf = self.copy_from_u32("combos_offs", &offs);
+        let vals_buf = self.copy_from_extelem("combos_deltas", &vals);
         extern "C" {
-            fn risc0_zkp_cuda_combos_prepare(
+            fn risc0_zkp_cuda_combos_sub(
                 combos: DevicePointer<u8>,
-                coeff_u: DevicePointer<u8>,
-                combo_count: u32,
-                cycles: u32,
-                regs_count: u32,
-                reg_sizes: DevicePointer<u8>,
-                reg_combo_ids: DevicePointer<u8>,
-                checkSize: u32,
-                mix: DevicePointer<u8>,
+                deltas: DevicePointer<u8>,
+                offsets: DevicePointer<u8>,
+                count: u32,
             ) -> *const std::os::raw::c_char;
         }
-
         ffi_wrap(|| unsafe {
-            risc0_zkp_cuda_combos_prepare(
+            risc0_zkp_cuda_combos_sub(
                 combos.as_device_ptr(),
-                coeff_u.as_device_ptr(),
-                combo_count,
-                cycles,
-                regs_count,
-                reg_sizes.as_device_ptr(),
-                reg_combo_ids.as_device_ptr(),
-                Self::CHECK_SIZE as u32,
-                mix.as_device_ptr(),
+                vals_buf.as_device_ptr(),
+                offs_buf.as_device_ptr(),
+                offs.len() as u32,
             )
         })
         .unwrap();
@@ -1558,6 +2084,11 @@ mod tests {
     }
 
     #[test]
+    fn hash_fold_tree_poseidon2() {
+        testutil::hash_fold_tree(HipHalPoseidon2::new());
+    }
+
+    #[test]
     fn fri_fold() {
         testutil::fri_fold(HipHalSha256::new());
     }
@@ -1595,5 +2126,10 @@ mod tests {
     #[test]
     fn mix_poly_coeffs() {
         testutil::mix_poly_coeffs(HipHalSha256::new());
+    }
+
+    #[test]
+    fn commit_coeffs_lde() {
+        testutil::commit_coeffs_lde(HipHalSha256::new());
     }
 }

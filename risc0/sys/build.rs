@@ -91,6 +91,14 @@ fn build_cuda_kernels(cxx_root: &Path) {
 fn build_rocm_kernels(cxx_root: &Path) {
     let sppark_root = env::var("DEP_SPPARK_ROOT").unwrap();
     println!("cargo:rerun-if-env-changed=RISC0_HIP_ARCH");
+    // `cc` tracks no sources itself, and the line above turns off cargo's default of re-running
+    // on any change in the package: track the kernels and the headers they include. File by
+    // file for sppark, whose `rust/sppark` symlink loop a directory would make cargo recurse.
+    println!("cargo:rerun-if-changed=kernels/zkp/cuda");
+    println!("cargo:rerun-if-changed={}", cxx_root.display());
+    for file in risc0_build_kernel::kernel_source_files(Path::new(&sppark_root)) {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
 
     env::set_var("HIP_PLATFORM", "amd");
 
@@ -108,7 +116,7 @@ fn build_rocm_kernels(cxx_root: &Path) {
         .flag("-Wno-unused-function")
         .flag("-Wno-unused-parameter")
         .flag("-Wno-missing-braces")
-        .flag(&format!(
+        .flag(format!(
             "--offload-arch={}",
             std::env::var("RISC0_HIP_ARCH").unwrap_or_else(|_| "native".to_string())
         ))
@@ -129,7 +137,32 @@ fn build_rocm_kernels(cxx_root: &Path) {
             "kernels/zkp/cuda/supra/api.cu",
             "kernels/zkp/cuda/supra/ntt.cu",
         ])
+        .flags(risc0_build_kernel::hip_host_flags())
         .compile("risc0_zkp_cuda");
+
+    // pv.cuh's Poseidon2 kernels in their own TU, with the ILP-first scheduler (see supra/pv_hip.cu).
+    cc::Build::new()
+        .compiler(&hipcc)
+        .cpp(true)
+        .debug(false)
+        .flag("-x")
+        .flag("hip")
+        .flag("-std=c++17")
+        .flag("-O3")
+        .flag("-Wno-unused-function")
+        .flag("-Wno-unused-parameter")
+        .flag(format!(
+            "--offload-arch={}",
+            std::env::var("RISC0_HIP_ARCH").unwrap_or_else(|_| "native".to_string())
+        ))
+        .flag("-mllvm")
+        .flag("-amdgpu-early-inline-all=false")
+        .flag("-mllvm")
+        .flag("-amdgpu-sched-strategy=max-ilp")
+        .include(cxx_root)
+        .file("kernels/zkp/cuda/supra/pv_hip.cu")
+        .flags(risc0_build_kernel::hip_host_flags())
+        .compile("risc0_zkp_cuda_pv");
 
     // Link against HIP runtime
     risc0_build_kernel::emit_rocm_lib_link();
@@ -157,8 +190,7 @@ fn build_intel_kernels() {
         }
     }
 
-    // Find icpx compiler
-    let icpx = which_icpx();
+    let icpx = risc0_build_kernel::find_icpx();
 
     // The ESIMD kernel sources. These are compiled into a single shared library
     // that provides the extern "C" FFI functions called from intel.rs.
@@ -172,69 +204,42 @@ fn build_intel_kernels() {
     ];
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let lib_path = out_dir.join("librisc0_intel_kernels.so");
-
-    // Compile with icpx
-    let mut cmd = std::process::Command::new(&icpx);
-    cmd.arg("-fsycl")
-        .arg("-shared")
-        .arg("-fPIC")
-        .arg("-std=c++17")
-        .arg("-O3")
+    let args: Vec<std::ffi::OsString> = [
+        "-fsycl",
+        "-std=c++17",
+        "-O3",
         // ESIMD stateless mem: forces A64 addressing for correct large-buffer access.
         // NOTE: -fsycl-device-code-split=off and -flto are used in benchmarks but cause
         // massive JIT regression (~200s) when combined without AOT. Keep them out until
         // AOT (-fsycl-targets=intel_gpu_bmg_g31) is added.
-        .arg("-fsycl-esimd-force-stateless-mem")
-        .arg("-Wno-unused-parameter")
-        .arg("-Wno-unused-function")
-        .arg("-Wno-unused-variable")
-        .arg("-o")
-        .arg(&lib_path)
-        .arg(format!("-I{}", intel_dir.display()));
+        "-fsycl-esimd-force-stateless-mem",
+        "-Wno-unused-parameter",
+        "-Wno-unused-function",
+        "-Wno-unused-variable",
+    ]
+    .iter()
+    .map(Into::into)
+    .chain([format!("-I{}", intel_dir.display()).into()])
+    .collect();
 
-    for src in &sources {
-        cmd.arg(src);
+    let output = risc0_build_kernel::intel_build_library(
+        &icpx,
+        &args,
+        &sources,
+        &out_dir,
+        "risc0_intel_kernels",
+    );
+    if !output.status.success() {
+        panic!(
+            "icpx compilation failed for Intel ESIMD kernels:
+{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
-    let status = cmd
-        .status()
-        .expect("Failed to run icpx. Is oneAPI installed?");
-    if !status.success() {
-        panic!("icpx compilation failed for Intel ESIMD kernels");
-    }
-
-    // Tell cargo to link against the compiled library
-    println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=dylib=risc0_intel_kernels");
-
-    // Also link the SYCL runtime
-    if let Ok(oneapi_root) = env::var("ONEAPI_ROOT") {
-        let lib_dir = PathBuf::from(&oneapi_root).join("lib");
-        if lib_dir.exists() {
-            println!("cargo:rustc-link-search=native={}", lib_dir.display());
-        }
-    }
-    // Link sycl runtime (libsycl.so)
-    println!("cargo:rustc-link-lib=dylib=sycl");
-}
-
-fn which_icpx() -> PathBuf {
-    // Check RISC0_ICPX env var first, then PATH
-    if let Ok(icpx) = env::var("RISC0_ICPX") {
-        return PathBuf::from(icpx);
-    }
-    // Try to find icpx in PATH
-    if let Ok(output) = std::process::Command::new("which").arg("icpx").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return PathBuf::from(path);
-            }
-        }
-    }
-    // Default: assume it's in PATH
-    PathBuf::from("icpx")
+    risc0_build_kernel::intel_link_library(&out_dir, "risc0_intel_kernels");
+    risc0_build_kernel::intel_link_sycl_runtime();
 }
 
 fn build_metal_kernels() {

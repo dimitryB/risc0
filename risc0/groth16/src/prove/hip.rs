@@ -29,7 +29,6 @@ use risc0_zkp::core::{
     digest::{Digest, DIGEST_WORDS},
     hash::poseidon_254::digest_to_fr_bytes,
 };
-use rzup::{Component, Rzup, Version};
 use tempfile::tempdir;
 
 use crate::{ProofJson, Seal};
@@ -41,26 +40,22 @@ use super::seal_format::{IopType, K_SEAL_ELEMS, K_SEAL_TYPES, K_SEAL_WORDS};
 /// Call this early (e.g. on a background thread) to overlap the ~1.2s graph
 /// read+parse and ~1.2s SRS load with segment proving.
 pub(crate) fn preload_graph() -> Result<()> {
-    let root_dir = Rzup::new()
-        .context("failed to initialize rzup")?
-        .get_version_dir(&Component::Risc0Groth16, &Version::new(0, 1, 0))
-        .context(
-            "Missing required `risc0-groth16` rzup component. \
-            To install it, ensure that your `rzup` version is >= 0.5.0, \
-            and then run `rzup install risc0-groth16`.",
-        )?;
+    let root_dir = super::component::component_dir()?;
     let witness_params = WitnessParams::new(&root_dir);
     let pg = PARSED_GRAPH.get_or_init(|| load_graph(&witness_params.graph_path));
 
-    // Also precompute BFS level data for parallel evaluation (~570ms).
-    // This runs on the background thread during segment proving.
+    // Also compile the graph for the fast evaluator, or failing that precompute BFS level data
+    // for parallel evaluation (~570ms). This runs on the background thread during segment
+    // proving.
     let nodes = pg
         .nodes
         .as_any()
         .downcast_ref::<Nodes<U254, VecNodes>>()
         .expect("expected U254 nodes in circom graph");
-    pg.level_data
-        .get_or_init(|| compute_level_data(&nodes.nodes));
+    if fast_program(pg, nodes).is_none() {
+        pg.level_data
+            .get_or_init(|| compute_level_data(&nodes.nodes));
+    }
 
     Ok(())
 }
@@ -82,7 +77,24 @@ fn load_graph(graph_path: &Path) -> ParsedGraph {
         signals,
         input_mapping,
         level_data: OnceLock::new(),
+        fast: OnceLock::new(),
     }
+}
+
+/// The graph compiled for `witness_fast` (as on CUDA), or None if it doesn't qualify.
+fn fast_program<'a>(
+    pg: &'a ParsedGraph,
+    nodes: &Nodes<U254, VecNodes>,
+) -> Option<&'a super::witness_fast::Program> {
+    pg.fast
+        .get_or_init(|| {
+            let fast = super::witness_fast::compile(nodes, &pg.signals);
+            if fast.is_none() {
+                tracing::warn!("groth16: the fast witness evaluator does not support this graph");
+            }
+            fast
+        })
+        .as_ref()
 }
 
 /// Convert seal bytes directly to a Vec of U254 values, bypassing JSON serialization.
@@ -113,19 +125,19 @@ fn seal_to_u254_values(seal_bytes: &[u8]) -> Result<Vec<U254>> {
     Ok(values)
 }
 
+/// Free the Groth16 prover and SRS that `shrink_wrap` caches on the GPU (the same cache as on CUDA,
+/// see `risc0_groth16_sys::release`). Without this they hold ~7 GB of an RX 9070 XT (16 GB) for the
+/// life of the process, and on Windows the next proof's STARK spills into shared system memory.
+pub(crate) fn release_srs() -> Result<()> {
+    risc0_groth16_sys::release().context("failed to release the cached groth16 SRS")
+}
+
 pub(crate) fn shrink_wrap(seal_bytes: &[u8]) -> Result<Seal> {
     let t_total = std::time::Instant::now();
     tracing::info!("shrink_wrap: {} seal bytes", seal_bytes.len());
 
     let t0 = std::time::Instant::now();
-    let root_dir = Rzup::new()
-        .context("failed to initialize rzup")?
-        .get_version_dir(&Component::Risc0Groth16, &Version::new(0, 1, 0))
-        .context(
-            "Missing required `risc0-groth16` rzup component. \
-            To install it, ensure that your `rzup` version is >= 0.5.0, \
-            and then run `rzup install risc0-groth16`.",
-        )?;
+    let root_dir = super::component::component_dir()?;
     let setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let tmp_dir = tempdir().context("failed to create temporary directory")?;
@@ -156,20 +168,26 @@ pub(crate) fn shrink_wrap(seal_bytes: &[u8]) -> Result<Seal> {
     let setup_params_clone =
         SetupParams::new(&root_dir).context("failed to create groth16 setup params for preload")?;
     let preload_handle = std::thread::spawn(move || {
+        let t0 = std::time::Instant::now();
         risc0_zkp::hal::hip::switch_to_device(groth16_device);
-        risc0_groth16_sys::preload(&setup_params_clone)
+        let result = risc0_groth16_sys::preload(&setup_params_clone);
+        (result, t0.elapsed().as_secs_f64() * 1000.0)
     });
 
     // Compute circom witness on CPU (~2s) — overlaps with SRS preload
+    let t0 = std::time::Instant::now();
     let witness_params = WitnessParams::new(&root_dir);
     let witness = calc_witness_binary(&witness_params.graph_path, iop_values)
         .context("failed to calculate groth16 witness")?;
+    let witness_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     // Wait for SRS preload to finish
-    preload_handle
+    let t0 = std::time::Instant::now();
+    let (preloaded, preload_ms) = preload_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("SRS preload thread panicked"))?
-        .context("SRS preload failed")?;
+        .map_err(|_| anyhow::anyhow!("SRS preload thread panicked"))?;
+    preloaded.context("SRS preload failed")?;
+    let preload_wait_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     {
         let _lock = risc0_zkp::hal::hip::singleton_for_device(groth16_device).lock();
@@ -188,7 +206,8 @@ pub(crate) fn shrink_wrap(seal_bytes: &[u8]) -> Result<Seal> {
 
         eprintln!(
             "[groth16_shrink_wrap] rzup={setup_ms:.1}ms seal_convert={seal_convert_ms:.1}ms \
-             clear_pool={clear_ms:.1}ms gpu_prove={prove_ms:.1}ms read_proof={read_ms:.1}ms \
+             clear_pool={clear_ms:.1}ms witness={witness_ms:.1}ms preload={preload_ms:.1}ms \
+             preload_wait={preload_wait_ms:.1}ms gpu_prove={prove_ms:.1}ms read_proof={read_ms:.1}ms \
              device={groth16_device} total={:.1}ms",
             t_total.elapsed().as_secs_f64() * 1000.0,
         );
@@ -199,13 +218,18 @@ pub(crate) fn shrink_wrap(seal_bytes: &[u8]) -> Result<Seal> {
     }
 }
 
-struct CalcWitness {
-    witness: Vec<wtns_file::FieldElement<32>>,
+enum CalcWitness {
+    Vec(Vec<wtns_file::FieldElement<32>>),
+    /// Canonical little-endian values in the pinned buffer, held until the prove has read it.
+    Pinned(risc0_groth16_sys::HostBuffer),
 }
 
 impl CalcWitness {
     fn as_ptr(&self) -> *const u8 {
-        self.witness.as_ptr() as *const u8
+        match self {
+            CalcWitness::Vec(w) => w.as_ptr() as *const u8,
+            CalcWitness::Pinned(buf) => buf.as_ptr(),
+        }
     }
 }
 
@@ -230,6 +254,7 @@ struct ParsedGraph {
     signals: Vec<usize>,
     input_mapping: InputSignalsInfo,
     level_data: OnceLock<LevelData>,
+    fast: OnceLock<Option<super::witness_fast::Program>>,
 }
 
 // SAFETY: The concrete type behind `dyn NodesInterface` is `Nodes<U254, VecNodes>`,
@@ -496,7 +521,7 @@ fn calc_witness(graph_path: &Path, inputs: &str) -> Result<CalcWitness> {
         (t3 - t0).as_secs_f64() * 1000.0,
     );
 
-    Ok(CalcWitness { witness })
+    Ok(CalcWitness::Vec(witness))
 }
 
 /// Binary-input variant of calc_witness that accepts pre-computed U254 values
@@ -538,6 +563,20 @@ fn calc_witness_binary(graph_path: &Path, iop_values: Vec<U254>) -> Result<CalcW
 
     let t1 = std::time::Instant::now();
 
+    // The fast evaluator (as on CUDA), straight into the pinned buffer the prover uploads from.
+    if let Some(program) = fast_program(pg, nodes) {
+        let mut buf = risc0_groth16_sys::host_buffer(pg.signals.len() * 32)
+            .context("failed to allocate the pinned witness buffer")?;
+        super::witness_fast::eval(program, nodes, &flat_inputs, buf.as_limbs_mut());
+        eprintln!(
+            "[groth16_witness] inputs={:.1}ms evaluate(fast)={:.1}ms total={:.1}ms",
+            (t1 - t0).as_secs_f64() * 1000.0,
+            t1.elapsed().as_secs_f64() * 1000.0,
+            t0.elapsed().as_secs_f64() * 1000.0,
+        );
+        return Ok(CalcWitness::Pinned(buf));
+    }
+
     // Evaluate the circuit graph using parallel BFS-level evaluation
     let result = evaluate_parallel(
         pg,
@@ -571,5 +610,5 @@ fn calc_witness_binary(graph_path: &Path, iop_values: Vec<U254>) -> Result<CalcW
         (t3 - t0).as_secs_f64() * 1000.0,
     );
 
-    Ok(CalcWitness { witness })
+    Ok(CalcWitness::Vec(witness))
 }

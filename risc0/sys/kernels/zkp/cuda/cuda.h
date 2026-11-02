@@ -32,6 +32,9 @@
 #include <cuda_runtime.h>
 #endif
 #include <stdexcept>
+#ifdef __HIPCC__
+#include "hip_hop.h"
+#endif
 
 // When cuda2hip.hpp is force-included (sppark builds), these are already defined.
 // Only provide them for standalone HIP compilation without cuda2hip.hpp.
@@ -120,6 +123,28 @@ inline LaunchConfig getCachedSimpleConfig(uint32_t count) {
   int grid = (count + blocks[device] - 1) / blocks[device];
   return LaunchConfig{grid, blocks[device], 0};
 }
+
+#ifdef __HIPCC__
+// launchKernel, with the kernel on a hop scope (hip_hop.h) when `hop`: for kernels expected to
+// run >~1 ms.
+template <typename... ExpTypes, typename... ActTypes>
+const char* launchKernelHop(bool hop,
+                            void (*kernel)(ExpTypes...),
+                            uint32_t count,
+                            uint32_t shared_size,
+                            ActTypes&&... args) {
+  try {
+    risc0_hip_hop::Scope stream(getPersistentStream(), hop);
+    LaunchConfig cfg = getCachedSimpleConfig(count);
+    kernel<<<cfg.grid, cfg.block, shared_size, stream>>>(std::forward<ActTypes>(args)...);
+  } catch (const std::exception& err) {
+    return strdup(err.what());
+  } catch (...) {
+    return strdup("Generic exception");
+  }
+  return nullptr;
+}
+#endif
 
 // Backward-compat alias used by circuit ffi files
 inline LaunchConfig getSimpleConfig(uint32_t count) {

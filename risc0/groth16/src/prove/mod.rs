@@ -14,6 +14,8 @@
 
 //! # Groth16 Prover
 
+#[cfg(any(feature = "rocm", feature = "intel"))]
+mod component;
 #[cfg(feature = "cuda")]
 mod cuda;
 #[cfg(not(any(feature = "cuda", feature = "rocm", feature = "native-groth16")))]
@@ -22,15 +24,18 @@ mod docker;
 mod fast;
 #[cfg(feature = "rocm")]
 mod hip;
+#[cfg(all(feature = "intel", not(any(feature = "cuda", feature = "rocm"))))]
+mod intel;
 #[cfg(feature = "native-groth16")]
 pub mod native;
 mod seal_format;
 mod seal_to_json;
-#[cfg(all(
-    any(feature = "intel", feature = "native-groth16"),
-    not(any(feature = "cuda", feature = "rocm"))
-))]
+#[cfg(feature = "native-groth16")]
 mod witness;
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+mod witness_fast;
+#[cfg(feature = "cuda")]
+mod witness_par;
 
 use anyhow::Result;
 
@@ -57,12 +62,27 @@ pub fn preload_graph() -> Result<()> {
     }
 }
 
+/// Start [preload_graph] on a background thread (CUDA with the cold-path optimizations on, see
+/// `RISC0_CUDA_G16_COLD`; no-op otherwise), e.g. while the guest executes.
+pub fn preload_graph_background() {
+    #[cfg(feature = "cuda")]
+    if self::cuda::cold_path_enabled() {
+        std::thread::spawn(|| {
+            let _ = self::cuda::preload_graph();
+        });
+    }
+}
+
 /// Start the Groth16 prover ahead of [shrink_wrap] so that it loads its
 /// proving key while the caller finishes `identity_p254` (intel builds with
 /// the rzup `risc0-groth16` component installed; otherwise a no-op).
 pub fn prestart_prover() -> Result<()> {
     cfg_if::cfg_if! {
         if #[cfg(all(feature = "intel", not(any(feature = "cuda", feature = "rocm"))))] {
+            if self::intel::enabled() {
+                // Uploads the proving key to the GPU in the background.
+                return self::intel::prestart();
+            }
             // Only check that the graph exists here: building the witness
             // program (~1 s) stays on the preload thread, off this path.
             if self::docker::fast_enabled()
@@ -77,6 +97,20 @@ pub fn prestart_prover() -> Result<()> {
     }
 }
 
+/// Start loading the Groth16 proving key in the background (CUDA; no-op elsewhere, on cards
+/// with less than 30 GB, or with `RISC0_CUDA_G16_COLD=0`). The loader waits for
+/// [prestart_key_go] (or 2 s).
+pub fn prestart_key() {
+    #[cfg(feature = "cuda")]
+    self::cuda::prestart_key();
+}
+
+/// Release a pending [prestart_key] loader (no-op if none is waiting).
+pub fn prestart_key_go() {
+    #[cfg(feature = "cuda")]
+    self::cuda::prestart_key_go();
+}
+
 /// Preload the SRS and Groth16 prover into C++ static cache.
 /// Call after STARK proving is complete and GPU is idle.
 pub fn preload_srs() -> Result<()> {
@@ -85,6 +119,12 @@ pub fn preload_srs() -> Result<()> {
             self::cuda::preload_srs()
         } else if #[cfg(feature = "rocm")] {
             Ok(()) // hip.rs handles SRS loading internally
+        } else if #[cfg(feature = "intel")] {
+            if self::intel::enabled() {
+                self::intel::preload_srs()
+            } else {
+                Ok(())
+            }
         } else {
             Ok(())
         }
@@ -105,9 +145,41 @@ pub fn release_srs() -> Result<()> {
     cfg_if::cfg_if! {
         if #[cfg(feature = "cuda")] {
             self::cuda::release_srs()
+        } else if #[cfg(feature = "rocm")] {
+            self::hip::release_srs()
+        } else if #[cfg(feature = "intel")] {
+            if self::intel::enabled() {
+                self::intel::release_srs()
+            } else {
+                Ok(())
+            }
         } else {
-            // ROCm caches through hip.rs's own path, untested here; docker mode holds nothing.
+            // Docker mode holds nothing.
             Ok(())
+        }
+    }
+}
+
+/// Discard the Groth16 prover's derived-data caches: the files the CUDA library keeps in its cache
+/// directory (compact coefficients and split-MSM corrections, normally validated by format, key
+/// and checksum) and the prover cached in memory. For a caller whose Groth16 seal failed
+/// verification: the next [shrink_wrap] rebuilds them from the proving key. No-op without CUDA.
+pub fn invalidate_caches() {
+    #[cfg(feature = "cuda")]
+    self::cuda::invalidate_caches();
+}
+
+/// Like [shrink_wrap], but runs `pre_gpu` on the calling thread while the witness is computed on
+/// a helper thread (CUDA; elsewhere `pre_gpu` runs first). `pre_gpu` has returned before the GPU
+/// part of the wrap starts. Used to overlap releasing the STARK HAL's buffer pool (thread-local,
+/// ~35 ms of frees) with the CPU-only witness generation.
+pub fn shrink_wrap_with(identity_p254_seal_bytes: &[u8], pre_gpu: impl FnOnce()) -> Result<Seal> {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "cuda")] {
+            self::cuda::shrink_wrap_with(identity_p254_seal_bytes, pre_gpu)
+        } else {
+            pre_gpu();
+            shrink_wrap(identity_p254_seal_bytes)
         }
     }
 }
@@ -121,6 +193,12 @@ pub fn shrink_wrap(identity_p254_seal_bytes: &[u8]) -> Result<Seal> {
             self::hip::shrink_wrap(identity_p254_seal_bytes)
         } else if #[cfg(feature = "native-groth16")] {
             self::native::shrink_wrap(identity_p254_seal_bytes)
+        } else if #[cfg(feature = "intel")] {
+            if self::intel::enabled() {
+                self::intel::shrink_wrap(identity_p254_seal_bytes)
+            } else {
+                self::docker::shrink_wrap(identity_p254_seal_bytes)
+            }
         } else {
             self::docker::shrink_wrap(identity_p254_seal_bytes)
         }

@@ -61,7 +61,8 @@ extern "C" const char* risc0_circuit_recursion_intel_eval_check(
 
         // Default WG=512: the kernel is built with 256 GRF/thread (-Os,
         // RISC0_INTEL_EVAL_FAST, DisableRecompilation=1), which caps the
-        // work-group at 512. Measured flat for 128..512 (41-42 ms/proof).
+        // work-group at 512. Measured flat for 128..512 (41-42 ms/proof on a B70
+        // when tuned; 169-172 ms on a B580 with the large private size below).
         // Runtime-tunable via RISC0_RECURSION_EVAL_CHECK_WG for sweeps.
         #ifndef RECURSION_EVAL_WG
 #define RECURSION_EVAL_WG 512
@@ -74,12 +75,17 @@ extern "C" const char* risc0_circuit_recursion_intel_eval_check(
             }
         }
         uint32_t global_size = ((domain + WG_SIZE - 1) / WG_SIZE) * WG_SIZE;
+        const uint32_t stride = global_size;
 
+        // A loop over the work item's rows (one row: the grid covers the domain), not an early
+        // return: with this form and build.rs's reload distance (`remat_distance`), IGC keeps
+        // poly_fp's values out of private memory (896 B per work item instead of 527,232 B), and
+        // eval_check takes 68 ms per recursion proof on an Arc B580 instead of 172. Either change
+        // alone left the large private size. build.rs warns if it comes back.
         q->parallel_for(
             sycl::nd_range<1>(global_size, WG_SIZE),
             [=](sycl::nd_item<1> item) {
-                uint32_t cycle = item.get_global_id(0);
-                if (cycle >= domain) return;
+              for (uint32_t cycle = item.get_global_id(0); cycle < domain; cycle += stride) {
 
                 // args order: ctrl(0), out/global(1), data(2), mix(3), accum(4)
                 Fp* args[5] = {ctrl, out, data, mix, accum};
@@ -99,6 +105,7 @@ extern "C" const char* risc0_circuit_recursion_intel_eval_check(
                 for (uint32_t i = 0; i < 4; i++) {
                     check[i * domain + cycle] = tot.elems[i] * quot;
                 }
+              }
             });
         q->wait();
 

@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use risc0_core::field::baby_bear::{BabyBear, Elem, ExtElem};
-use risc0_groth16::prove::shrink_wrap;
+use risc0_groth16::prove::shrink_wrap_with;
 use risc0_zkp::hal::{CircuitHal, Hal};
 
 use self::{dev_mode::DevModeProver, prover_impl::ProverImpl};
@@ -47,7 +47,12 @@ use crate::{
 pub(crate) fn check_groth16_receipt(receipt: &Groth16Receipt<ReceiptClaim>) -> Result<()> {
     receipt
         .verify_integrity_with_context(&VerifierContext::default())
-        .map_err(|e| anyhow!("Groth16 receipt failed verification: {e}"))
+        .map_err(|e| {
+            // A bad seal may come from a damaged derived-data cache of the Groth16 prover:
+            // discard those, so the next wrap rebuilds them instead of failing the same way.
+            risc0_groth16::prove::invalidate_caches();
+            anyhow!("Groth16 receipt failed verification: {e}")
+        })
 }
 
 mod private {
@@ -221,10 +226,12 @@ pub trait ProverServer: private::Sealed {
         let seal_bytes = ident_receipt.get_seal_bytes();
         let seal_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
-        // Hand the GPU to the Groth16 prover, then take it back. See `release_hal_buffers`.
-        release_hal_buffers();
+        // Hand the GPU to the Groth16 prover, then take it back. See `release_hal_buffers`. The
+        // first release runs while the wrap computes its witness on another thread.
+        #[cfg(any(feature = "rocm", feature = "intel"))]
+        prover_impl::release_cached_provers();
         let t2 = std::time::Instant::now();
-        let seal = shrink_wrap(&seal_bytes)?.to_vec();
+        let seal = shrink_wrap_with(&seal_bytes, release_hal_buffers)?.to_vec();
         release_hal_buffers();
         let wrap_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
@@ -494,9 +501,20 @@ pub(crate) fn exclusive_gpu() -> impl Sized {}
 /// so it fits beside what the STARK left behind, and AFTER it so the next proof's STARK is not
 /// competing with the wrap's freed scratch.
 ///
-/// Not called on ROCm, whose HAL has the same pool and its own `clear_buffer_pool`: that path was not
-/// tested when this was added.
+/// On ROCm the HAL has the same pool, released by its own `clear_buffer_pool`. On Windows a HIP
+/// allocation beyond the card's memory does not fail but spills into shared system memory, so
+/// without this a session's keccak proofs ran beside the segments' cached buffers on an RX 9070 XT
+/// (16 GB), with up to 12.5 GB spilled and each keccak eval_check at ~7x its time.
+///
+/// On Intel the HAL's pool (capped at 16 GiB) is released the same way: neither the Groth16 prover
+/// nor the keccak eval_check allocates through it. Without this, a session's keccak proofs and its
+/// wrap, and the next session's segments, ran with the segments' idle buffers still cached and
+/// spilled into shared system memory on an Arc Pro B70 (32 GB), at 2-5x the time.
 pub(crate) fn release_hal_buffers() {
     #[cfg(feature = "cuda")]
     risc0_zkp::hal::cuda::clear_buffer_pool();
+    #[cfg(feature = "rocm")]
+    risc0_zkp::hal::hip::clear_buffer_pool();
+    #[cfg(feature = "intel")]
+    risc0_zkp::hal::intel::release_idle_buffers();
 }

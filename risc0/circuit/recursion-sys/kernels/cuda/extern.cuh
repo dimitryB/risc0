@@ -22,6 +22,12 @@
 #include <cuda_runtime.h>
 #endif
 
+#if defined(__HIPCC__) && !defined(__trap)
+// The generated accum steps (step_*_accum.cu and their _inl.cuh copies) end with a branch-free
+// assert, `if (c1_bad) __trap();`; HIP has no __trap.
+#define __trap() __builtin_trap()
+#endif
+
 inline __device__ void
 extern_readIOPHeader(void* ctx, size_t cycle, const char* extra, Fp* args, Fp* outs) {
   // printf("extern_readIOPHeader(%lu, [%u, %u])\n", cycle, args[0].asUInt32(), args[1].asUInt32());

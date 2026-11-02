@@ -28,6 +28,18 @@ pub use witgen::PreflightResults;
 #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
 pub use self::hal::metal::{metal_rv32im_stats, metal_rv32im_kernel_source, MetalRv32imStats};
 
+/// The `rand_z` of a segment preflight ([PreflightResults::new]): random, or one with the
+/// `witgen_debug` feature (reproducible witnesses).
+pub fn preflight_rand_z() -> crate::zirgen::circuit::ExtVal {
+    cfg_if! {
+        if #[cfg(feature = "witgen_debug")] {
+            <crate::zirgen::circuit::ExtVal as risc0_core::field::Elem>::ONE
+        } else {
+            <crate::zirgen::circuit::ExtVal as risc0_core::field::Elem>::random(&mut rand::rng())
+        }
+    }
+}
+
 const GLOBAL_MIX: usize = 0;
 const GLOBAL_OUT: usize = 1;
 
@@ -122,6 +134,7 @@ pub fn metal_segment_prover(staging_bytes: usize) -> Result<Box<dyn SegmentProve
 pub fn rocm_warmup() {
     use risc0_sys::ffi_wrap;
     // Initialize HIP runtime and select the thread's device.
+    risc0_zkp::hal::hip::auto_configure_hw_queues();
     unsafe {
         risc0_sys::hip::hipInit(0);
         risc0_sys::hip::hipSetDevice(risc0_zkp::hal::hip::get_device_for_thread());

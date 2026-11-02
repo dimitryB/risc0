@@ -29,15 +29,19 @@ namespace cuda {
     __device__ operator T() const   { return atomicAdd(const_cast<T*>(&val), T(0)); }
   };
 }
+using LookupCell = ::cuda::atomic<uint32_t>;
 #else
-#include <cuda/atomic>
+// Plain counters, updated with relaxed device-scope atomicAdd. ::cuda::atomic's
+// operators are seq_cst at system scope (a MEMBAR.SC.SYS per access); the
+// counts are integer adds, which commute, so the totals are the same.
+using LookupCell = uint32_t;
 #endif
 
 namespace risc0::circuit::rv32im_v2::cuda {
 
 struct LookupTables {
-  ::cuda::atomic<uint32_t>* tableU8;
-  ::cuda::atomic<uint32_t>* tableU16;
+  LookupCell* tableU8;
+  LookupCell* tableU16;
 
   __device__ void lookupDelta(Fp table, Fp index, Fp count) {
     uint32_t tableU32 = table.asUInt32();
@@ -54,11 +58,19 @@ struct LookupTables {
       assert(false && "u8/16 table error");
     }
     // printf("table = %u, index = %u\n", tableU32, indexU32);
+#ifdef __HIPCC__
     if (tableU32 == 8) {
       tableU8[indexU32]++;
     } else {
       tableU16[indexU32]++;
     }
+#else
+    if (tableU32 == 8) {
+      atomicAdd(&tableU8[indexU32], 1u);
+    } else {
+      atomicAdd(&tableU16[indexU32], 1u);
+    }
+#endif
   }
 
   __device__ Fp lookupCurrent(Fp table, Fp index) {
@@ -67,11 +79,20 @@ struct LookupTables {
       assert(false && "Invalid lookup table");
     }
     uint32_t indexU32 = index.asUInt32();
+#ifdef __HIPCC__
     if (tableU32 == 8) {
       return Fp(tableU8[indexU32]);
     } else {
       return Fp(tableU16[indexU32]);
     }
+#else
+    // Read after the counting kernel finished: bypass L1, which may be stale.
+    if (tableU32 == 8) {
+      return Fp(__ldcg(&tableU8[indexU32]));
+    } else {
+      return Fp(__ldcg(&tableU16[indexU32]));
+    }
+#endif
   }
 };
 

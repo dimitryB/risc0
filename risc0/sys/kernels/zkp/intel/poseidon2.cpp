@@ -191,20 +191,32 @@ static void ensure_poseidon2_opencl_kernels(sycl::queue& q) {
         auto src_kb = sx::create_kernel_bundle_from_source(
             q.get_context(), sx::source_language::opencl,
             std::string(POSEIDON2_GATE0_CL_SRC));
-        std::string log;
-        std::vector<std::string> opts = {"-cl-std=CL3.0",
-                                          "-cl-mad-enable",
-                                          "-cl-intel-256-GRF-per-thread"};
-        auto exe_kb = sx::build(src_kb, sx::properties{
-            sx::build_options(opts), sx::save_log(&log)});
-        if (!log.empty()) {
-            std::fprintf(stderr, "[poseidon2-opencl] build log:\n%s\n", log.c_str());
-        }
         // Use _mont_io variants: skip to_mont(input)/from_mont(output) since
         // the ESIMD prover pipeline keeps buffers in Mont form throughout.
-        g_k_hash_fold         = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_fold_mont_io");
-        g_k_hash_rows_24      = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_24_mont_io");
-        g_k_hash_rows_generic = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_mont_io");
+        // In 256-GRF mode first. Alchemist (Arc A770) cannot run these kernels' 256-wide SIMD32
+        // work-groups in 256-GRF mode (UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE from
+        // urKernelCreate), so there they are built in the default mode.
+        auto build_gate0 = [&](bool large_grf) {
+            std::string log;
+            std::vector<std::string> opts = {"-cl-std=CL3.0", "-cl-mad-enable"};
+            if (large_grf) opts.push_back("-cl-intel-256-GRF-per-thread");
+            auto exe_kb = sx::build(src_kb, sx::properties{
+                sx::build_options(opts), sx::save_log(&log)});
+            if (!log.empty()) {
+                std::fprintf(stderr, "[poseidon2-opencl] build log:\n%s\n", log.c_str());
+            }
+            g_k_hash_fold         = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_fold_mont_io");
+            g_k_hash_rows_24      = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_24_mont_io");
+            g_k_hash_rows_generic = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_mont_io");
+        };
+        try {
+            build_gate0(true);
+        } catch (const sycl::exception&) {
+            g_k_hash_fold.reset();
+            g_k_hash_rows_24.reset();
+            g_k_hash_rows_generic.reset();
+            build_gate0(false);
+        }
         // Commit-path kernels: separate small bundle built in 128-GRF mode
         // (SIMD16, 8 threads/EU; state fits without spill). Measured 185 -> 134 ms
         // for 211 cols x 2^22 rows on B70, bit-identical.
@@ -231,10 +243,17 @@ static void ensure_poseidon2_opencl_kernels(sycl::queue& q) {
                 // forms on XMX (DPAS, exact; tools/poseidon2_lift_gen.py) and a
                 // signed-Montgomery S-box: rows -34%, fold -37% vs v7, bit-identical.
                 // RISC0_P2_ROWS / RISC0_P2_FOLD select another kernel by suffix (e.g. v7, v6, v3).
+                // v9 is for Xe2 (Battlemage): on Alchemist (Arc A770), whose DPAS runs at
+                // SIMD8, v9's rows gave wrong hashes (hash_rows_poseidon2 failed; v7 passed).
+                namespace sxa = sycl::ext::oneapi::experimental;
+                const auto arch = q.get_device().get_info<sxa::info::device::architecture>();
+                const bool alchemist = arch == sxa::architecture::intel_gpu_acm_g10 ||
+                                       arch == sxa::architecture::intel_gpu_acm_g11 ||
+                                       arch == sxa::architecture::intel_gpu_acm_g12;
                 const char* rsel = std::getenv("RISC0_P2_ROWS");
                 const char* fsel = std::getenv("RISC0_P2_FOLD");
-                std::string rname = rsel ? rsel : "v9";
-                std::string fname = fsel ? fsel : "v9";
+                std::string rname = rsel ? rsel : (alchemist ? "v7" : "v9");
+                std::string fname = fsel ? fsel : (alchemist ? "v7" : "v9");
                 if (rname == "v9" || fname == "v9") {
                     if (!g_d_lift_a) {
                         g_d_lift_a = sycl::malloc_device<uint16_t>(sizeof(POSEIDON2_LIFT_A) / 2, q);

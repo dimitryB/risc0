@@ -31,6 +31,22 @@ use anyhow::Result;
 use risc0_core::scope;
 
 static VERBOSE: LazyLock<bool> = LazyLock::new(|| std::env::var("RISC0_VERBOSE").is_ok());
+
+/// Free the host preflight trace (~124 MB at po2=20) after the eval_check launch. On CUDA and
+/// ROCm, on a background thread: inline it holds up the next segment by 10-20 ms with the GPU
+/// idle (on ROCm eval_check has finished by then, so it is all on the critical path). The
+/// trace is plain host memory (nothing in it is registered with the device).
+fn drop_trace(trace: PreflightTrace) {
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    if let Err(err) = std::thread::Builder::new()
+        .name("drop_trace".into())
+        .spawn(move || drop(trace))
+    {
+        tracing::debug!("drop_trace: inline ({err})");
+    }
+    #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+    drop(trace);
+}
 use risc0_zkp::{
     adapter::{CircuitInfo as _, PROOF_SYSTEM_INFO},
     core::digest::Digest,
@@ -40,7 +56,7 @@ use risc0_zkp::{
 };
 
 use super::{
-    witgen::{preflight::PreflightTrace, PreflightResults, WitnessGenerator},
+    witgen::{preflight::PreflightTrace, prefill_next_segment, PreflightResults, WitnessGenerator},
     Seal, SegmentProver,
 };
 use crate::{
@@ -92,6 +108,19 @@ pub(crate) enum StepMode {
 }
 
 pub(crate) trait CircuitWitnessGenerator<H: Hal> {
+    /// Whether `generate_witness` writes the per-cycle columns (witgen::CYCLE_COLS) itself
+    /// when the trace defers them (`PreflightTrace::cycle_cols_deferred`).
+    fn writes_cycle_cols(&self) -> bool {
+        false
+    }
+
+    /// Whether `generate_witness` can take a zero-filled data buffer instead of an INVALID-filled
+    /// one (see `WitnessGenerator::hal_generate_witness`): its writes are not checked against
+    /// the cells' initial value.
+    fn takes_zeroed_data(&self) -> bool {
+        false
+    }
+
     fn generate_witness(
         &self,
         mode: StepMode,
@@ -111,6 +140,11 @@ pub(crate) trait CircuitAccumulator<H: Hal> {
         global: &MetaBuffer<H>,
         mix: &MetaBuffer<H>,
     ) -> Result<()>;
+
+    /// Whether `step_accum` already leaves the accum buffer zeroized (INVALID -> 0).
+    fn step_accum_zeroizes(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) struct SegmentProverImpl<H, C, F>
@@ -173,15 +207,7 @@ where
     fn preflight(&self, segment: &Segment) -> Result<PreflightResults> {
         scope!("preflight");
 
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "witgen_debug")] {
-                let rand_z = ExtVal::ONE;
-            } else {
-                let mut rng = rand::rng();
-                let rand_z = ExtVal::random(&mut rng);
-            }
-        }
-        PreflightResults::new(segment, rand_z)
+        PreflightResults::new(segment, super::preflight_rand_z())
     }
 
     fn prove_core(&self, preflight_results: PreflightResults) -> Result<Seal> {
@@ -336,13 +362,15 @@ where
             // but that keeps witgen live across eval_check's peak VRAM use.
             // Free the host-side trace while eval_check runs (see prove_begin).
             let trace = std::mem::take(&mut witgen.trace);
+            let cycles = witgen.cycles();
             drop(witgen);
+            prefill_next_segment(hal.as_ref(), circuit_hal.as_ref(), cycles);
 
             let t3 = std::time::Instant::now();
             let result = prover.finalize_with_hook(
                 &[&mix.buf, &global_clone],
                 circuit_hal.as_ref(),
-                move || drop(trace),
+                move || drop_trace(trace),
             );
 
             if *VERBOSE {
@@ -442,10 +470,7 @@ where
         let t_accum = ta.elapsed();
 
         let tac = std::time::Instant::now();
-        prover.commit_group(
-            REGISTER_GROUP_ACCUM,
-            &witgen.accum.as_ref().unwrap().buf,
-        );
+        prover.commit_group(REGISTER_GROUP_ACCUM, &witgen.accum.as_ref().unwrap().buf);
         let t_accum_commit = tac.elapsed();
 
         let global_clone = hal.alloc_elem("global_clone", witgen.global.buf.size());
@@ -461,7 +486,9 @@ where
         // which runs while eval_check is on the GPU, not on the critical path
         // (~13 ms/segment at po2=20 on Intel).
         let trace = std::mem::take(&mut witgen.trace);
+        let cycles = witgen.cycles();
         drop(witgen);
+        prefill_next_segment(hal.as_ref(), circuit_hal.as_ref(), cycles);
 
         let t_main = t0.elapsed();
 
@@ -469,7 +496,7 @@ where
         let mut deferred = prover.start_finalize_with_hook(
             &[&mix.buf, &global_clone],
             circuit_hal.as_ref(),
-            move || drop(trace),
+            move || drop_trace(trace),
         );
         // Keep globals alive until eval_check completes.
         deferred.keep_alive_buf(mix.buf);

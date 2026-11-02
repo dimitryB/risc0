@@ -334,6 +334,18 @@ fn test_recursion_lift_join_identity_p254_e2e() {
     compressed_receipt.verify(MULTI_TEST_ID).unwrap();
 }
 
+/// The recursion witgen chains executed on the host give the same witness as the device
+/// witgen: lift, join, identity_p254 and resolve with the check on.
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[test_log::test]
+fn test_recursion_host_chains_check() {
+    let before = risc0_circuit_recursion::prove::set_host_chains_check(true);
+    test_recursion_lift_join_identity_p254_e2e();
+    test_recursion_lift_resolve_e2e();
+    let after = risc0_circuit_recursion::prove::set_host_chains_check(false);
+    assert!(after > before, "no recursion witness was checked");
+}
+
 #[test_log::test]
 fn test_recursion_identity_sha256() {
     let (_, default_receipt) = ECHO_SUCCINCT.clone();

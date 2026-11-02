@@ -49,3 +49,12 @@ __global__ void combos_prepare(FpExt* combos,
     cur *= *mix;
   }
 }
+
+// combos[offsets[k]] -= deltas[k] (offsets are unique; deltas precomputed on the host).
+__global__ void combos_sub(FpExt* combos, const FpExt* deltas, const uint32_t* offsets,
+                           const uint32_t count) {
+  uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (gid < count) {
+    combos[offsets[gid]] -= deltas[gid];
+  }
+}

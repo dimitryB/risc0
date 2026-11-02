@@ -1,4 +1,6 @@
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -30,7 +32,11 @@ typedef fr_t scalar_t;
 #ifndef __HIPCC__
 #define SPPARK_DONT_INSTANTIATE_TEMPLATES
 #endif
-#include "msm/pippenger.cuh"
+#ifdef __HIPCC__
+#include "msm/pippenger.cuh" // msm_groth16 is CUDA-only (inline PTX, <cuda.h>)
+#else
+#include "msm_groth16/pippenger.cuh"
+#endif
 
 #ifdef __HIPCC__
 // G2 MSM kernel explicit instantiations (G1 handled by pippenger.cuh defaults).
@@ -69,6 +75,7 @@ using namespace sppark::bn254;
 
 #include "util.cuh"
 
+#include "pinned_upload.cuh"
 #include "groth16_coeffs.cuh"
 #include "groth16_srs.cuh"
 #include "groth16_prover.cuh"
@@ -169,6 +176,25 @@ static groth16_prover* cached_prover[kMaxDevices] = {};
 static std::mutex cached_mutex;
 static std::mutex prove_mutex[kMaxDevices];
 
+// Builds the cached prover for `dev` on its cached SRS (caller holds cached_mutex). A prover whose
+// construction throws after it started permuting the SRS points in place (the split MSMs, see
+// groth16_prover::split_init) leaves them permuted: drop that SRS too, so the next prove reloads
+// it instead of failing on (or building a prover over) permuted points.
+static void build_cached_prover(int dev, const SetupParams* setup_params) {
+  try {
+    cached_prover[dev] = new groth16_prover(
+        *cached_srs[dev], setup_params->pcoeffs_path, setup_params->fres_path);
+  } catch (...) {
+    if (cached_srs[dev]->split_permuted) {
+      // Work queued on the SRS buffers (the permutation) must finish before they are freed.
+      (void)cudaDeviceSynchronize();
+      delete cached_srs[dev];
+      cached_srs[dev] = nullptr;
+    }
+    throw;
+  }
+}
+
 // The current device, checked to index the per-device caches.
 static int current_device() {
   int dev = 0;
@@ -184,6 +210,60 @@ static int current_device() {
   return dev;
 }
 
+// A pinned host buffer of at least `bytes` (one per process, grown as needed), for the
+// witness: it uploads in one fast DMA. THP-backed (ThpPinned): pinning 180 MB takes ~13 ms instead
+// of ~40-140 ms of cudaHostAlloc holding the driver lock. The Rust caller
+// (risc0_groth16_sys::host_buffer) serializes its users; growing frees the old buffer.
+static ThpPinned g16_witness_buf;
+static std::mutex g16_witness_buf_mu;
+
+extern "C" void* risc0_groth16_cuda_host_buffer(size_t bytes) {
+  std::lock_guard<std::mutex> lock(g16_witness_buf_mu);
+  if (bytes > g16_witness_buf.bytes) {
+    try {
+      g16_witness_buf.alloc(bytes);
+    } catch (...) {
+      g16_witness_buf.free_pinned();
+      return nullptr;
+    }
+  }
+  return g16_witness_buf.ptr;
+}
+
+// Create the pinned upload stager (130 MB, streams, events) now, at the start of a Groth16
+// session while the STARK's first segment is still host-bound, instead of when the key loader
+// starts (by then the STARK is GPU-bound, and the registration stalls its launches). Skipped
+// (*created = 0) on a card with less than `min_total_vram` bytes, where the key isn't prestarted.
+extern "C" const char* risc0_groth16_cuda_stager_init(size_t min_total_vram, int* created) {
+  *created = 0;
+  try {
+    size_t free_b = 0, total_b = 0;
+    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess || total_b < min_total_vram)
+      return nullptr;
+    (void)key_stager::get();
+    *created = 1;
+  } catch (const std::exception& err) {
+    return strdup(err.what());
+  }
+  return nullptr;
+}
+
+// Free what risc0_groth16_cuda_stager_init and an early witness-buffer pin allocated, when
+// the key prestart gave up (both are recreated on demand). The Rust caller holds the witness
+// buffer's lock.
+extern "C" void risc0_groth16_cuda_pinned_release() {
+  key_stager* stager;
+  {
+    std::lock_guard<std::mutex> lock(cached_mutex);
+    stager = key_stager::take();
+  }
+  // Outside cached_mutex: unpinning waits for the whole device (ThpPinned::free_pinned), and a
+  // preload for another device should not wait for that.
+  delete stager;
+  std::lock_guard<std::mutex> lock(g16_witness_buf_mu);
+  g16_witness_buf.free_pinned();
+}
+
 extern "C" const char* risc0_groth16_cuda_preload(SetupParams* setup_params) {
   try {
     int dev = current_device();
@@ -192,9 +272,48 @@ extern "C" const char* risc0_groth16_cuda_preload(SetupParams* setup_params) {
       cached_srs[dev] = new SRS(dev, setup_params->srs_path);
     }
     if (!cached_prover[dev]) {
-      cached_prover[dev] = new groth16_prover(
-          *cached_srs[dev], setup_params->pcoeffs_path, setup_params->fres_path);
+      build_cached_prover(dev, setup_params);
     }
+  } catch (const std::exception& err) {
+    return strdup(err.what());
+  }
+  return nullptr;
+}
+
+// The witness indices that are always 0/1 (the bit set of the split MSMs), used by the next
+// prover construction.
+extern "C" void risc0_groth16_cuda_set_bit_signals(const uint32_t* bits, size_t len) {
+  std::lock_guard<std::mutex> lk(g16_bits_mu);
+  g16_bits().assign(bits, bits + len);
+}
+
+// Load the proving key (SRS points + preprocessed coeffs) and build the prover in the
+// background, e.g. while the STARK proves. Uploads go through the pinned stager on its own
+// non-blocking streams (never pageable copies: those take the driver lock for their whole
+// duration and stall every other thread's CUDA calls). Skipped (loaded = 0) on a card with less
+// than `min_total_vram` bytes, where the key cannot sit beside a STARK proof.
+
+extern "C" const char* risc0_groth16_cuda_prestart(SetupParams* setup_params,
+                                                   size_t min_total_vram,
+                                                   size_t* witness_len,
+                                                   int* loaded) {
+  *loaded = 0;
+  *witness_len = 0;
+  try {
+    int dev = current_device();
+    size_t free_b = 0, total_b = 0;
+    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess || total_b < min_total_vram)
+      return nullptr;
+    g16_staged_upload = true;
+    std::lock_guard<std::mutex> lock(cached_mutex);
+    if (!cached_srs[dev]) {
+      cached_srs[dev] = new SRS(dev, setup_params->srs_path);
+    }
+    if (!cached_prover[dev]) {
+      build_cached_prover(dev, setup_params);
+    }
+    *witness_len = cached_srs[dev]->get_a_size();
+    *loaded = 1;
   } catch (const std::exception& err) {
     return strdup(err.what());
   }
@@ -223,8 +342,7 @@ extern "C" const char* risc0_groth16_cuda_prove(SetupParams* setup_params,
         cached_srs[dev] = new SRS(dev, setup_params->srs_path);
       }
       if (!cached_prover[dev]) {
-        cached_prover[dev] = new groth16_prover(
-            *cached_srs[dev], setup_params->pcoeffs_path, setup_params->fres_path);
+        build_cached_prover(dev, setup_params);
       }
       prover = cached_prover[dev];
     }

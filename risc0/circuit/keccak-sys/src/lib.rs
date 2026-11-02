@@ -101,3 +101,20 @@ extern "C" {
 
     pub fn risc0_circuit_keccak_cuda_reset() -> *const std::os::raw::c_char;
 }
+
+#[cfg(feature = "intel")]
+extern "C" {
+    pub fn risc0_circuit_keccak_intel_eval_check(
+        queue: *mut std::ffi::c_void,
+        check: *mut u32,
+        ctrl: *const u32,
+        data: *const u32,
+        accum: *const u32,
+        mix: *const u32,
+        out: *const u32,
+        rou: u32,
+        po2: u32,
+        domain: u32,
+        poly_mix_pows: *const u32,
+    ) -> *const std::os::raw::c_char;
+}

@@ -176,6 +176,18 @@ jobs:
         with:
           python-version: "3.10"
       - run: python license-check.py
+      - name: check the generated CUDA eval_check kernel is up to date
+        run: python risc0/circuit/rv32im-sys/kernels/cuda/evalfast/regen.py --check
+      - name: check the CUDA accum batch inversion is applied to steps.cu
+        run: python risc0/circuit/rv32im-sys/kernels/cuda/accum_batchinv.py --check
+      - name: check the CUDA accum and witgen TUs are up to date
+        run: |
+          python risc0/circuit/rv32im-sys/kernels/cuda/accum_tu_gen.py --check
+          python risc0/circuit/rv32im-sys/kernels/cuda/witgen_tu_gen.py --check
+      - name: check the generated CUDA recursion kernels are up to date
+        run: |
+          python risc0/circuit/recursion-sys/kernels/cuda/eval_check_split.py --check
+          python risc0/circuit/recursion-sys/kernels/cuda/accum_inl_gen.py --check
       - name: check for "D0 NOT MERGE" comments
         run: |
           [ "$(grep -re 'DO[_ ]\?NOT[_ ]\?MERGE' $(git ls-tree --full-tree --name-only -r HEAD) | tee /dev/fd/2 | wc -l)" -eq "0" ]

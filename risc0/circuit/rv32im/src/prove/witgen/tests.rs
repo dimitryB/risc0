@@ -74,11 +74,16 @@ fn fwd_rev_ab_test(program: Program) {
     .unwrap();
 
     cfg_if::cfg_if! {
-        if #[cfg(any(feature = "cuda", feature = "rocm"))] {
+        if #[cfg(feature = "cuda")] {
             use risc0_zkp::hal::cuda::CudaHalPoseidon2;
             use crate::prove::hal::cuda::CudaCircuitHalPoseidon2;
             let hal = std::sync::Arc::new(CudaHalPoseidon2::new());
             let circuit_hal = CudaCircuitHalPoseidon2::new(hal.clone());
+        } else if #[cfg(feature = "rocm")] {
+            use risc0_zkp::hal::hip::HipHalPoseidon2;
+            use crate::prove::hal::hip::HipCircuitHalPoseidon2;
+            let hal = std::sync::Arc::new(HipHalPoseidon2::new());
+            let circuit_hal = HipCircuitHalPoseidon2::new(hal.clone());
         // } else if #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "ios"))] {
         //     use risc0_zkp::hal::metal::MetalHalSha256;
         //     use crate::prove::hal::metal::MetalCircuitHal;
@@ -287,4 +292,72 @@ fn intel_ab(program: Program) {
         total_bad, 0,
         "Intel parallel witgen diverged from CPU sequential witgen"
     );
+}
+
+/// HIP witness generation must match the CPU's bit for bit (the fwd/rev tests compare the GPU
+/// with itself). The accumulator is left to the prove tests: the CPU's fails on Windows.
+#[cfg(feature = "rocm")]
+#[test]
+fn hip_matches_cpu() {
+    use std::sync::Arc;
+
+    use risc0_zkp::hal::hip::HipHalPoseidon2;
+
+    use crate::{prove::hal::hip::HipCircuitHalPoseidon2, zirgen::circuit::Val};
+
+    fn first_diff(label: &str, cpu: &[Val], gpu: &[Val], width: usize) -> usize {
+        let bad: Vec<usize> = (0..cpu.len()).filter(|&i| cpu[i] != gpu[i]).collect();
+        if let Some(&i) = bad.first() {
+            eprintln!(
+                "[hip-ab] {label}: {} of {} differ; first row {} col {}: cpu={:?} gpu={:?}",
+                bad.len(),
+                cpu.len(),
+                i / width,
+                i % width,
+                cpu[i],
+                gpu[i]
+            );
+        }
+        bad.len()
+    }
+
+    let image = MemoryImage::new_kernel(testutil::kernel::simple_loop(2000));
+    let session = testutil::execute(
+        image,
+        DEFAULT_SEGMENT_LIMIT_PO2,
+        MAX_INSN_CYCLES,
+        testutil::DEFAULT_SESSION_LIMIT,
+        &testutil::NullSyscall,
+        None,
+    )
+    .unwrap();
+
+    let gpu_hal = Arc::new(HipHalPoseidon2::new());
+    let gpu_circuit = HipCircuitHalPoseidon2::new(gpu_hal.clone());
+    let suite = risc0_zkp::core::hash::poseidon2::Poseidon2HashSuite::new_suite();
+    let cpu_hal = Rc::new(risc0_zkp::hal::cpu::CpuHal::new(suite));
+    let cpu_circuit = crate::prove::hal::cpu::CpuCircuitHal;
+
+    let mut rng = rand::rng();
+    let rand_z = ExtVal::random(&mut rng);
+    let mut bad = 0;
+    for segment in session.segments {
+        let pf = PreflightResults::new(&segment, rand_z).unwrap();
+        let cpu = WitnessGenerator::new(
+            cpu_hal.as_ref(),
+            &cpu_circuit,
+            pf.clone(),
+            StepMode::SeqForward,
+        )
+        .unwrap();
+        let gpu =
+            WitnessGenerator::new(gpu_hal.as_ref(), &gpu_circuit, pf, StepMode::Parallel).unwrap();
+        bad += first_diff(
+            "data",
+            &cpu.data.as_ref().unwrap().to_vec(),
+            &gpu.data.as_ref().unwrap().to_vec(),
+            REGCOUNT_DATA,
+        );
+    }
+    assert_eq!(bad, 0);
 }

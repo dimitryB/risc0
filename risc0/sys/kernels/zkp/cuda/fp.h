@@ -68,8 +68,29 @@ private:
     return (r > P ? r + P : r);
   }
 
+#ifdef __HIP_DEVICE_COMPILE__
+  // mul() on RDNA, bit-identical for all inputs: there 32-bit multiplies issue at a quarter of the
+  // add rate, so red = M * low (a v_mul_lo_u32) comes from shift-adds instead: M * -lo == -(lo *
+  // p^-1) with p^-1 = 2^31 + 2^27 + 1. The empty asm keeps LLVM from folding the shifts back into a
+  // multiply. The final reduction is a v_min_u32 (ret - P wraps above ret when ret < P).
+  static __device__ uint32_t mul_rdna(uint32_t a, uint32_t b) {
+    uint64_t o64 = uint64_t(a) * uint64_t(b);
+    uint32_t lo = uint32_t(o64);
+    uint32_t t = lo + (lo << 27);
+    asm("" : "+v"(t));
+    uint32_t red = (lo << 31) - t;
+    o64 += uint64_t(red) * uint64_t(P);
+    uint32_t ret = o64 >> 32;
+    return __builtin_elementwise_min(ret, ret - P);
+  }
+#endif
+
   // Multiply two numbers
   static __host__ __device__ constexpr uint32_t mul(uint32_t a, uint32_t b) {
+#ifdef __HIP_DEVICE_COMPILE__
+    if (!__builtin_is_constant_evaluated())
+      return mul_rdna(a, b);
+#endif
     uint64_t o64 = uint64_t(a) * uint64_t(b);
     uint32_t low = -uint32_t(o64);
     uint32_t red = M * low;

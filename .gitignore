@@ -30,3 +30,6 @@ risc0/circuit/rv32im-sys/intel_*_amalg.s
 risc0/circuit/rv32im-sys/intel_*_amalg.out
 risc0/circuit/rv32im-sys/intel_*_amalg.table
 risc0/circuit/rv32im-sys/intel_*_amalg.txt
+
+# bytecode caches of the in-tree kernel generators (kernels/**/*.py)
+__pycache__/

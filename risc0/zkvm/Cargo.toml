@@ -191,6 +191,7 @@ rocm = [
 intel = [
   "prove",
   "risc0-groth16/intel",
+  "risc0-circuit-keccak/intel",
   "risc0-circuit-recursion/intel",
   "risc0-circuit-rv32im/intel",
   "risc0-zkp/intel",

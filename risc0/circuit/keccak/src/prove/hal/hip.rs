@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
+use rayon::prelude::*;
 use risc0_circuit_keccak_sys::{
-    risc0_circuit_keccak_cuda_eval_check, risc0_circuit_keccak_cuda_reset,
-    risc0_circuit_keccak_cuda_scatter, risc0_circuit_keccak_cuda_witgen, RawBuffer, RawExecBuffers,
-    RawPreflightTrace, ScatterInfo,
+    risc0_circuit_keccak_cuda_eval_check, risc0_circuit_keccak_cuda_reset, ScatterInfo,
 };
 use risc0_core::{
     field::{
@@ -33,7 +32,7 @@ use risc0_zkp::{
     field::ExtElem as _,
     hal::{
         hip::{BufferImpl as HipBuffer, HipHal, HipHalPoseidon2, HipHash, HipHashPoseidon2},
-        AccumPreflight, Buffer, CircuitHal, Hal,
+        AccumPreflight, Buffer, CircuitHal,
     },
     INV_RATE,
 };
@@ -41,22 +40,35 @@ use risc0_zkp::{
 use crate::{
     prove::{KeccakProver, KeccakProverImpl, GLOBAL_MIX, GLOBAL_OUT},
     zirgen::{
-        circuit::{REGISTER_GROUP_ACCUM, REGISTER_GROUP_CODE, REGISTER_GROUP_DATA},
+        circuit::{Val, REGISTER_GROUP_ACCUM, REGISTER_GROUP_CODE, REGISTER_GROUP_DATA},
         info::{NUM_POLY_MIX_POWERS, POLY_MIX_POWERS},
     },
 };
 
-use super::{CircuitWitnessGenerator, MetaBuffer, PreflightCycleOrder, PreflightTrace, StepMode};
-use crate::prove::preflight::ControlState;
+use super::{
+    cpu::{generate_witness_host, scatter_preflight_host, HostMetaBuffer},
+    CircuitWitnessGenerator, ForwardPreflightOrder, MetaBuffer, PreflightCycleOrder,
+    PreflightTrace, StepMode,
+};
 
 pub struct HipCircuitHal<CH: HipHash> {
-    hal: Rc<HipHal<CH>>, // retain a reference to ensure the context remains valid
+    _hal: Rc<HipHal<CH>>, // retain a reference to ensure the context remains valid
+    // The host copy of a data buffer `scatter_preflight` has filled, and that buffer's address:
+    // `generate_witness` continues from it rather than downloading the buffer.
+    scattered: RefCell<Option<(usize, Vec<Val>)>>,
 }
 
 impl<CH: HipHash> HipCircuitHal<CH> {
     pub fn new(hal: Rc<HipHal<CH>>) -> Self {
-        Self { hal }
+        Self {
+            _hal: hal,
+            scattered: RefCell::new(None),
+        }
     }
+}
+
+fn device_addr<T>(buf: &HipBuffer<T>) -> usize {
+    buf.as_device_ptr().as_ptr() as usize
 }
 
 impl<CH: HipHash> Drop for HipCircuitHal<CH> {
@@ -65,21 +77,12 @@ impl<CH: HipHash> Drop for HipCircuitHal<CH> {
     }
 }
 
-pub(crate) struct HipPreflightOrder;
-
-// Reorder our processing so that we process each mux arm together.
-// This cuts down on warp divergence at the expense of coalescing
-// fewer memory operations.
-impl PreflightCycleOrder for HipPreflightOrder {
-    type Key = (u8, u8);
-
-    fn key_for_cycle(state: &ControlState) -> Self::Key {
-        (state.cycle_type, state.sub_type)
-    }
-}
-
+// The witness is made on the host, as on Intel GPUs: under HIP the GPU witness generation
+// (par_stepExec) fails a device assertion from po2 16 (an RX 9070 XT, HIP SDK 7.2 on Windows),
+// which there takes the device down with it.
 impl<CH: HipHash> CircuitWitnessGenerator<HipHal<CH>> for HipCircuitHal<CH> {
-    type PreferredPreflightOrder = HipPreflightOrder;
+    type PreferredPreflightOrder = ForwardPreflightOrder;
+    const HOST_WITNESS: bool = true;
 
     fn scatter_preflight(
         &self,
@@ -88,16 +91,15 @@ impl<CH: HipHash> CircuitWitnessGenerator<HipHal<CH>> for HipCircuitHal<CH> {
         from: &[u32],
     ) -> Result<()> {
         scope!("scatter");
-        let from = self.hal.copy_from_u32("from", from);
-        ffi_wrap(|| unsafe {
-            risc0_circuit_keccak_cuda_scatter(
-                into.buf.as_device_ptr(),
-                infos.as_ptr(),
-                from.as_device_ptr(),
-                into.rows as u32,
-                infos.len() as u32,
-            )
-        })
+        // `into` was just allocated all INVALID (see `MetaBuffer::new`): make that on the host
+        // rather than download it.
+        let mut host: Vec<Val> = (0..into.buf.size())
+            .into_par_iter()
+            .map(|_| Val::INVALID)
+            .collect();
+        scatter_preflight_host(&mut host, into.rows, infos, from);
+        *self.scattered.borrow_mut() = Some((device_addr(&into.buf), host));
+        Ok(())
     }
 
     fn generate_witness<O: PreflightCycleOrder>(
@@ -108,44 +110,20 @@ impl<CH: HipHash> CircuitWitnessGenerator<HipHal<CH>> for HipCircuitHal<CH> {
         data: &MetaBuffer<HipHal<CH>>,
     ) -> Result<()> {
         scope!("witgen");
-
-        let cycles = preflight.cycle;
-        assert_eq!(cycles, data.rows);
-        tracing::debug!("witgen: {cycles}");
-
-        let global_ptr = global.buf.as_device_ptr();
-        let data_ptr = data.buf.as_device_ptr();
-        let buffers = RawExecBuffers {
-            global: RawBuffer {
-                buf: global_ptr.as_ptr() as *const BabyBearElem,
-                rows: global.rows,
-                cols: global.cols,
-                checked_reads: global.checked_reads,
-            },
-            data: RawBuffer {
-                buf: data_ptr.as_ptr() as *const BabyBearElem,
-                rows: data.rows,
-                cols: data.cols,
-                checked_reads: data.checked_reads,
-            },
+        let mut host_data = match self.scattered.take() {
+            Some((addr, host)) if addr == device_addr(&data.buf) => host,
+            _ => data.buf.to_vec(),
         };
-
-        let (run_order, preimage_idx): (Vec<u32>, Vec<u32>) = preflight
-            .cycles
-            .values()
-            .flatten()
-            .map(|c| (c.cycle, c.preimage_idx))
-            .collect();
-
-        let preflight = RawPreflightTrace {
-            preimages: preflight.preimages.as_ptr(),
-            preimages_count: preflight.preimages.len() as u32,
-            preimage_idxs: preimage_idx.as_ptr(),
-            run_order: run_order.as_ptr(),
-        };
-        ffi_wrap(|| unsafe {
-            risc0_circuit_keccak_cuda_witgen(mode as u32, &buffers, &preflight, cycles as u32)
-        })
+        let mut host_global = global.buf.to_vec();
+        generate_witness_host(
+            mode,
+            preflight,
+            HostMetaBuffer::of(global, &mut host_global),
+            HostMetaBuffer::of(data, &mut host_data),
+        )?;
+        global.buf.copy_from_host(&host_global);
+        data.buf.copy_from_host(&host_data);
+        Ok(())
     }
 }
 
@@ -231,4 +209,34 @@ pub fn keccak_prover() -> Result<Box<dyn KeccakProver>> {
 
 fn hip_reset() {
     ffi_wrap(|| unsafe { risc0_circuit_keccak_cuda_reset() }).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use risc0_core::field::baby_bear::BabyBear;
+    use risc0_zkp::{
+        core::hash::poseidon2::Poseidon2HashSuite,
+        hal::{cpu::CpuHal, hip::HipHalPoseidon2},
+    };
+    use test_log::test;
+
+    use super::HipCircuitHalPoseidon2;
+    use crate::prove::hal::cpu::CpuCircuitHal;
+
+    #[test]
+    fn eval_check() {
+        const PO2: usize = 4;
+        let cpu_hal: CpuHal<BabyBear> = CpuHal::new(Poseidon2HashSuite::new_suite());
+        let gpu_hal = Rc::new(HipHalPoseidon2::new());
+        let gpu_eval = HipCircuitHalPoseidon2::new(gpu_hal.clone());
+        crate::prove::testutil::eval_check(
+            &cpu_hal,
+            CpuCircuitHal,
+            gpu_hal.as_ref(),
+            gpu_eval,
+            PO2,
+        );
+    }
 }

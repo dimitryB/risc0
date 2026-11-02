@@ -57,6 +57,13 @@ rocm = [
   "risc0-zkp/rocm",
   "std",
 ]
+intel = [
+  "prove",
+  "risc0-circuit-keccak-sys/intel",
+  "risc0-sys/intel",
+  "risc0-zkp/intel",
+  "std",
+]
 default = ["prove"]
 # Enables ZKR registration to actually generate proofs.
 prove = [

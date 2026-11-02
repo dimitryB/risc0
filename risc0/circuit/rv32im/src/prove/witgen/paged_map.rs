@@ -108,8 +108,129 @@ impl PagedMap {
     pub fn insert(&mut self, addr: &WordAddr, word: u32) -> Option<u32> {
         self.get_mut(addr).replace(word)
     }
+}
 
-    pub fn insert_default(&mut self, addr: &WordAddr, word: u32, default: u32) -> u32 {
-        self.insert(addr, word).unwrap_or(default)
+/// Per-word preflight bookkeeping in one map: the word's value at its first recorded
+/// load (`orig`, the old `orig_words` map) and the cycle of its last transaction (`prev`, the
+/// old `prev_cycle` map). The body touched both maps on every recorded load; one lookup now
+/// serves both, and the wrap pass reads both with one lookup too.
+#[derive(Clone, Copy)]
+pub(crate) struct WordTxn {
+    /// Last transaction cycle, `u32::MAX` if none (cycles are < 2^31).
+    pub prev: u32,
+    /// Value at the first recorded load, valid if `has_orig`.
+    pub orig: u32,
+    pub has_orig: bool,
+}
+
+impl Default for WordTxn {
+    fn default() -> Self {
+        Self {
+            prev: u32::MAX,
+            orig: 0,
+            has_orig: false,
+        }
+    }
+}
+
+const TXN_LOW_BITS: u32 = 10;
+const TXN_LOW: usize = 1 << TXN_LOW_BITS;
+
+/// Two-level map from word address to [`WordTxn`]: a directly indexed table of low-table
+/// indices (by address >> 10), then 1024-entry low tables. Maps are recycled across segments
+/// ([`WordTxnMap::take`] / [`WordTxnMap::recycle`]): a fresh 16 MB index table per segment cost
+/// the preflight thread page faults and an munmap (up to ~10 ms on a loaded host).
+pub(crate) struct WordTxnMap {
+    high: Vec<u32>,
+    low: Vec<Box<[WordTxn; TXN_LOW]>>,
+    /// Low tables in use (index 0 is the "absent" marker); the rest are kept for reuse.
+    used: usize,
+    /// High-table entries set since the last reset.
+    touched: Vec<u32>,
+}
+
+static WORD_TXN_POOL: std::sync::Mutex<Vec<WordTxnMap>> = std::sync::Mutex::new(Vec::new());
+
+impl WordTxnMap {
+    fn new() -> Self {
+        Self {
+            high: vec![0; 1 << (32 - TXN_LOW_BITS)],
+            low: vec![Box::new([WordTxn::default(); TXN_LOW])],
+            used: 1,
+            touched: Vec::new(),
+        }
+    }
+
+    /// An empty map from the pool (or a new one).
+    pub fn take() -> Self {
+        WORD_TXN_POOL
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(Self::new)
+    }
+
+    /// A placeholder without allocations (only valid to drop or recycle).
+    pub fn placeholder() -> Self {
+        Self {
+            high: Vec::new(),
+            low: Vec::new(),
+            used: 0,
+            touched: Vec::new(),
+        }
+    }
+
+    /// Drop the pooled maps (see `cuda_stage::release`). Never blocks.
+    #[cfg_attr(not(any(feature = "cuda", feature = "rocm")), allow(dead_code))]
+    pub fn trim_pool() {
+        if let Ok(mut pool) = WORD_TXN_POOL.try_lock() {
+            pool.clear();
+        }
+    }
+
+    /// Reset this map and return it to the pool.
+    pub fn recycle(mut self) {
+        if self.high.is_empty() {
+            return;
+        }
+        for hi in self.touched.drain(..) {
+            self.high[hi as usize] = 0;
+        }
+        self.used = 1;
+        let mut pool = WORD_TXN_POOL.lock().unwrap();
+        if pool.len() < 4 {
+            pool.push(self);
+        }
+    }
+
+    #[inline(always)]
+    pub fn get_mut(&mut self, addr: &WordAddr) -> &mut WordTxn {
+        let hi = (addr.0 >> TXN_LOW_BITS) as usize;
+        let lo = addr.0 as usize & (TXN_LOW - 1);
+        let mut idx = self.high[hi] as usize;
+        if idx == 0 {
+            idx = self.new_low(hi);
+        }
+        &mut self.low[idx][lo]
+    }
+
+    #[cold]
+    fn new_low(&mut self, hi: usize) -> usize {
+        let idx = self.used;
+        if idx == self.low.len() {
+            self.low.push(Box::new([WordTxn::default(); TXN_LOW]));
+        } else {
+            self.low[idx].fill(WordTxn::default());
+        }
+        self.used += 1;
+        self.high[hi] = idx as u32;
+        self.touched.push(hi as u32);
+        idx
+    }
+
+    #[inline(always)]
+    pub fn get(&self, addr: &WordAddr) -> Option<&WordTxn> {
+        let idx = self.high[(addr.0 >> TXN_LOW_BITS) as usize] as usize;
+        (idx != 0).then(|| &self.low[idx][addr.0 as usize & (TXN_LOW - 1)])
     }
 }

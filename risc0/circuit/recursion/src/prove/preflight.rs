@@ -14,16 +14,13 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use risc0_circuit_recursion_sys::RawPreflightCycle;
 use risc0_core::field::baby_bear::{BabyBearElem as Fp, BabyBearExtElem as FpExt};
 use risc0_zkp::{
     core::{
         digest::{DIGEST_SHORTS, DIGEST_WORDS, WORD_SIZE},
-        hash::{
-            poseidon2::{poseidon2_mix, CELLS},
-            sha::SHA256_INIT,
-        },
+        hash::{poseidon2::CELLS, sha::SHA256_INIT},
     },
     field::{Elem as _, ExtElem},
     layout,
@@ -61,9 +58,45 @@ pub(crate) struct PreflightTrace {
     pub iops: Vec<FpExt>,
 }
 
+/// Input words that arrive while the preflight runs (streaming join preflight). The
+/// preflight blocks when it needs more words than it holds until `push` or `close`.
+#[derive(Default)]
+pub struct InputStream {
+    q: std::sync::Mutex<(VecDeque<u32>, bool)>,
+    cv: std::sync::Condvar,
+}
+
+impl InputStream {
+    pub fn push(&self, words: &[u32]) {
+        let mut g = self.q.lock().unwrap();
+        g.0.extend(words.iter().copied());
+        self.cv.notify_all();
+    }
+    pub fn close(&self) {
+        let mut g = self.q.lock().unwrap();
+        g.1 = true;
+        self.cv.notify_all();
+    }
+    /// Move at least `n` words (or all, once closed) into `into`; returns the wait in ns.
+    fn pull(&self, into: &mut VecDeque<u32>, n: usize) -> u64 {
+        let t = std::time::Instant::now();
+        let mut g = self.q.lock().unwrap();
+        while into.len() + g.0.len() < n && !g.1 {
+            g = self.cv.wait(g).unwrap();
+        }
+        into.extend(g.0.drain(..));
+        t.elapsed().as_nanos() as u64
+    }
+}
+
 pub struct Preflight {
     pub(crate) trace: PreflightTrace,
     input: VecDeque<u32>,
+    stream: Option<std::sync::Arc<InputStream>>,
+    /// Nanoseconds spent blocked on `stream`.
+    pub stream_wait_ns: u64,
+    /// Words consumed from the input so far.
+    pub consumed: usize,
 
     poseidon2_state: [Fp; CELLS],
     sha_state: [u32; DIGEST_WORDS],
@@ -89,6 +122,14 @@ pub struct Preflight {
     /// RISC0_RECURSION_PREWITGEN): lets the CPU witgen run on the pipelining
     /// thread instead of the GPU thread.
     pub(crate) host_witness: std::sync::Mutex<Option<(Vec<Fp>, Vec<Fp>)>>,
+
+    /// Rows of the long sequential witgen chains, executed on the host (see
+    /// `witgen::host_chains`), so the GPU witgen does not run them one thread at a time.
+    pub(crate) host_chains: std::sync::Mutex<Option<super::witgen::HostChains>>,
+
+    /// Page-locked copy of the trace and host chains (see `host_prep_enabled`).
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    pub(crate) pinned: std::sync::Mutex<Option<super::pinned::PinnedTrace>>,
 }
 
 impl Preflight {
@@ -96,6 +137,9 @@ impl Preflight {
         Preflight {
             trace: PreflightTrace::default(),
             input,
+            stream: None,
+            stream_wait_ns: 0,
+            consumed: 0,
 
             poseidon2_state: [Fp::ZERO; CELLS],
             sha_state: [0; 8],
@@ -111,14 +155,46 @@ impl Preflight {
             cur_iop_body: VecDeque::new(),
             iop_idx: 0,
             host_witness: std::sync::Mutex::new(None),
+            host_chains: std::sync::Mutex::new(None),
+            #[cfg(any(feature = "cuda", feature = "rocm"))]
+            pinned: std::sync::Mutex::new(None),
         }
     }
 
-    fn read_input_word(&mut self) -> u32 {
-        self.input.pop_front().unwrap()
+    /// Streaming variant: `input` is the prefix available now, the rest arrives on `stream`.
+    pub fn new_streaming(input: VecDeque<u32>, stream: std::sync::Arc<InputStream>) -> Self {
+        let mut p = Self::new(input);
+        p.stream = Some(stream);
+        p
     }
 
-    fn read_iop_header(&mut self, count: Fp, k_flip: Fp) {
+    pub fn is_streaming(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    /// Make `n` input words available (waiting for the stream if there is one). Fails if the
+    /// input ends first (e.g. the stream was closed early on its producer's error path).
+    fn need(&mut self, n: usize) -> Result<()> {
+        if self.input.len() < n {
+            if let Some(s) = &self.stream {
+                self.stream_wait_ns += s.pull(&mut self.input, n);
+            }
+        }
+        ensure!(
+            self.input.len() >= n,
+            "recursion preflight: input ended after {} words, {n} more needed",
+            self.consumed
+        );
+        self.consumed += n;
+        Ok(())
+    }
+
+    fn read_input_word(&mut self) -> Result<u32> {
+        self.need(1)?;
+        Ok(self.input.pop_front().unwrap())
+    }
+
+    fn read_iop_header(&mut self, count: Fp, k_flip: Fp) -> Result<()> {
         let count = count.as_u32() as usize;
         let k_flip = k_flip.as_u32();
         let k = k_flip as usize / 2;
@@ -126,6 +202,7 @@ impl Preflight {
         tracing::trace!("read_iop_header(count: {count}, k: {k}, flip: {flip})");
 
         assert!(self.cur_iop_body.is_empty());
+        self.need(if k == 2 { count } else { k * count })?;
         if k == 2 {
             self.cur_iop_body.extend(
                 self.input
@@ -147,6 +224,7 @@ impl Preflight {
                 self.cur_iop_body.push_back(poly);
             }
         }
+        Ok(())
     }
 
     fn read_iop_body(&mut self, do_mont: Fp) -> FpExt {
@@ -251,7 +329,7 @@ impl Preflight {
         };
         let mut cycle_input: Vec<u32> = Vec::new();
         for i in 0..WORD_SIZE {
-            let word = self.read_input_word();
+            let word = self.read_input_word()?;
             let bytes = word.to_le_bytes();
             for (j, b) in bytes.iter().enumerate() {
                 let elem_idx = i * WORD_SIZE + j;
@@ -311,7 +389,7 @@ impl Preflight {
 
     fn poseidon2_partial(&mut self, _cycle: usize) -> Result<bool> {
         tracing::trace!("Poseidon2 partial");
-        poseidon2_mix(&mut self.poseidon2_state);
+        super::p2fast::poseidon2_mix_fast(&mut self.poseidon2_state);
         Ok(false)
     }
 
@@ -574,7 +652,7 @@ impl Preflight {
             }
             micro_op::READ_IOP_HEADER => {
                 tracing::trace!("iop header {:?} {:?}", args[0], args[1]);
-                self.read_iop_header(args[0], args[1]);
+                self.read_iop_header(args[0], args[1])?;
                 true
             }
             micro_op::READ_IOP_BODY => {

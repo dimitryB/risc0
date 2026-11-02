@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use risc0_circuit_rv32im_sys::{
     risc0_circuit_rv32im_cuda_accum, risc0_circuit_rv32im_cuda_eval_check,
-    risc0_circuit_rv32im_cuda_witgen, RawAccumBuffers, RawBuffer, RawExecBuffers,
+    risc0_circuit_rv32im_cuda_witgen_v2, RawAccumBuffers, RawBuffer, RawExecBuffers,
     RawPreflightTrace,
 };
 use risc0_core::{
@@ -53,11 +53,16 @@ pub struct CudaCircuitHal<CH: CudaHash> {
 
 impl<CH: CudaHash> CudaCircuitHal<CH> {
     pub fn new(_hal: Arc<CudaHal<CH>>) -> Self {
+        risc0_zkp::hal::cuda::register_release_hook(super::super::witgen::cuda_stage::release);
         Self { _hal }
     }
 }
 
 impl<CH: CudaHash> CircuitWitnessGenerator<CudaHal<CH>> for CudaCircuitHal<CH> {
+    fn writes_cycle_cols(&self) -> bool {
+        true
+    }
+
     fn generate_witness(
         &self,
         mode: StepMode,
@@ -96,6 +101,17 @@ impl<CH: CudaHash> CircuitWitnessGenerator<CudaHal<CH>> for CudaCircuitHal<CH> {
             },
         };
 
+        // The staged slot is owned by `preflight` (the trace), which outlives the stream work.
+        let (staged, staged_id) = preflight
+            .staged
+            .as_ref()
+            .and_then(|s| s.ptr_for(preflight).map(|p| (p, s.id)))
+            .unwrap_or((std::ptr::null(), 0));
+        let cycle_cols = if preflight.cycle_cols_deferred {
+            crate::prove::witgen::CYCLE_COLS.as_ptr()
+        } else {
+            std::ptr::null()
+        };
         let preflight = RawPreflightTrace {
             cycles: preflight.cycles.as_ptr(),
             txns: preflight.txns.as_ptr(),
@@ -105,7 +121,15 @@ impl<CH: CudaHash> CircuitWitnessGenerator<CudaHal<CH>> for CudaCircuitHal<CH> {
             table_split_cycle: preflight.table_split_cycle,
         };
         ffi_wrap(|| unsafe {
-            risc0_circuit_rv32im_cuda_witgen(mode as u32, &buffers, &preflight, cycles as u32)
+            risc0_circuit_rv32im_cuda_witgen_v2(
+                mode as u32,
+                &buffers,
+                &preflight,
+                cycles as u32,
+                staged,
+                cycle_cols,
+                staged_id,
+            )
         })
     }
 }
@@ -162,6 +186,10 @@ impl<CH: CudaHash> CircuitAccumulator<CudaHal<CH>> for CudaCircuitHal<CH> {
         };
         ffi_wrap(|| unsafe { risc0_circuit_rv32im_cuda_accum(&buffers, &preflight, cycles as u32) })
     }
+
+    fn step_accum_zeroizes(&self) -> bool {
+        unsafe { risc0_circuit_rv32im_sys::risc0_circuit_rv32im_cuda_accum_zeroizes() != 0 }
+    }
 }
 
 impl<CH: CudaHash> CircuitHal<CudaHal<CH>> for CudaCircuitHal<CH> {
@@ -212,6 +240,9 @@ impl<CH: CudaHash> CircuitHal<CudaHal<CH>> for CudaCircuitHal<CH> {
         let rou = Val::ROU_FWD[po2 + EXP_PO2];
 
         tracing::debug!("steps: {steps}, domain: {domain}, po2: {po2}, rou: {rou:?}");
+        // eval_check_ef.cu is generated for this many powers (EF_NPC); a circuit
+        // change must regenerate it (kernels/cuda/evalfast/regen.py).
+        const _: () = assert!(NUM_POLY_MIX_POWERS == 458);
         let poly_mix_pows = map_pow(poly_mix, POLY_MIX_POWERS);
         let poly_mix_pows: &[u32; ExtVal::EXT_SIZE * NUM_POLY_MIX_POWERS] =
             ExtVal::as_u32_slice(poly_mix_pows.as_slice())
@@ -240,6 +271,9 @@ impl<CH: CudaHash> CircuitHal<CudaHal<CH>> for CudaCircuitHal<CH> {
             fn risc0_circuit_rv32im_cuda_eval_check_dep() -> *const std::os::raw::c_char;
         }
         risc0_sys::ffi_wrap(|| unsafe { risc0_circuit_rv32im_cuda_eval_check_dep() }).unwrap();
+        // eval_check is done: copy the next segment's staged preflight (if the preflight thread
+        // has finished it) while this segment's finalize kernels run.
+        crate::prove::witgen::cuda_stage::prefetch_ready();
     }
 }
 

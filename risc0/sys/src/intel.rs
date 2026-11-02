@@ -26,6 +26,7 @@ use std::sync::Once;
 extern "C" {
     // Queue lifecycle
     pub fn esimd_create_queue() -> *mut c_void;
+    pub fn esimd_device_total_memory() -> usize;
     pub fn esimd_destroy_queue(queue: *mut c_void);
     pub fn esimd_sync(queue: *mut c_void);
 
@@ -348,6 +349,12 @@ static BG_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 static BG_INIT: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
 static BG_JOIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static WARMUP: Once = Once::new();
+
+/// Total memory of the Intel GPU the singleton queue runs on, in bytes; 0 before [get_queue]
+/// has created the queue.
+pub fn device_total_memory() -> usize {
+    unsafe { esimd_device_total_memory() }
+}
 
 /// Get the singleton SYCL queue, creating it on first call.
 /// Panics if no Intel GPU is found. If [start_background_init] is running,

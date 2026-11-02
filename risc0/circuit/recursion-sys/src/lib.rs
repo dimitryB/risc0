@@ -47,6 +47,19 @@ pub struct RawPreflightTrace {
     pub num_iops: u32,
 }
 
+/// Rows of host-executed witgen chains, uploaded and scattered by the CUDA witgen.
+#[repr(C)]
+pub struct RawHostChains {
+    pub heads: *const u32,
+    pub num_heads: u32,
+    pub cycles: *const u32,
+    pub rows: *const u32,
+    pub wom_idx: *const u32,
+    pub wom_rows: *const u32,
+    pub num_rows: u32,
+    pub data_cols: u32,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum StepMode {
@@ -69,6 +82,21 @@ extern "C" {
         total_cycles: u32,
     ) -> *const std::os::raw::c_char;
 
+    /// Run the given (start, len) chains of the CPU witgen on the host; see ffi.cpp.
+    pub fn risc0_circuit_recursion_cpu_chains(
+        code: *const BabyBearElem,
+        ctrl_cols: u32,
+        preflight: *const RawPreflightTrace,
+        steps: u32,
+        data_cols: u32,
+        chains: *const u32,
+        num_chains: u32,
+        out_cycles: *mut u32,
+        out_rows: *mut u32,
+        out_wom_idx: *mut u32,
+        out_wom_rows: *mut u32,
+    ) -> *const std::os::raw::c_char;
+
     pub fn risc0_circuit_recursion_cpu_eval_check(
         buffers: *const RawAccumBuffers,
         poly_mix: *const BabyBearExtElem,
@@ -86,6 +114,18 @@ extern "C" {
         buffers: *const RawExecBuffers,
         preflight: *const RawPreflightTrace,
         steps: u32,
+    ) -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_recursion_cuda_warmup() -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_recursion_cuda_warmup_eval_check() -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_recursion_cuda_witgen_chains(
+        mode: StepMode,
+        buffers: *const RawExecBuffers,
+        preflight: *const RawPreflightTrace,
+        steps: u32,
+        host_chains: *const RawHostChains,
     ) -> *const std::os::raw::c_char;
 
     pub fn risc0_circuit_recursion_cuda_accum(
@@ -135,5 +175,56 @@ extern "C" {
         accum: *mut std::os::raw::c_void,
         work: u32,
         total: u32,
+    ) -> *const std::os::raw::c_char;
+}
+
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+extern "C" {
+    pub fn risc0_circuit_recursion_cuda_host_alloc(
+        bytes: usize,
+        out: *mut *mut std::ffi::c_void,
+    ) -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_recursion_cuda_host_free(
+        p: *mut std::ffi::c_void,
+    ) -> *const std::os::raw::c_char;
+}
+
+// ROCm: upload a prepared recursion preflight's page-locked witgen inputs ahead of its witgen,
+// and forget them (after their copies) if it never ran. See `StagedInputs` in ffi.cu.
+#[cfg(feature = "rocm")]
+extern "C" {
+    pub fn risc0_circuit_recursion_hip_stage(
+        trace: *const RawPreflightTrace,
+        host_chains: *const RawHostChains,
+    ) -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_recursion_hip_unstage(
+        wom: *const std::ffi::c_void,
+    ) -> *const std::os::raw::c_char;
+
+    // Witness buffer passes on the risc0 persistent stream (column-major, 2^log_rows rows per
+    // column; see recInitRows in ffi.cu): INVALID in rows [0, live) and zero after; `value` in the
+    // last `zk` rows of every column; INVALID -> zero in rows [0, live).
+    pub fn risc0_circuit_recursion_hip_init_rows(
+        buf: *mut u32,
+        log_rows: u32,
+        live: u32,
+        cols: u32,
+    ) -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_recursion_hip_fill_tail(
+        buf: *mut u32,
+        value: u32,
+        log_rows: u32,
+        zk: u32,
+        cols: u32,
+    ) -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_recursion_hip_zeroize_rows(
+        buf: *mut u32,
+        log_rows: u32,
+        live: u32,
+        cols: u32,
     ) -> *const std::os::raw::c_char;
 }

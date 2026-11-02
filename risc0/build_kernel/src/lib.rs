@@ -47,6 +47,7 @@ pub struct KernelBuild {
     kernel_type: KernelType,
     flags: Vec<String>,
     files: Vec<PathBuf>,
+    own_thread_files: Vec<PathBuf>,
     inc_dirs: Vec<PathBuf>,
     deps: Vec<PathBuf>,
 }
@@ -57,6 +58,7 @@ impl KernelBuild {
             kernel_type,
             flags: Vec::new(),
             files: Vec::new(),
+            own_thread_files: Vec::new(),
             inc_dirs: Vec::new(),
             deps: Vec::new(),
         }
@@ -89,6 +91,27 @@ impl KernelBuild {
         for file in p.into_iter() {
             self.file(file);
         }
+        self
+    }
+
+    /// Add files which will be compiled (C++ only) each on a thread of its own, started before
+    /// the other files, with the same command `cc` would run.
+    ///
+    /// For a few huge generated files on the critical path of the build: through `cc`'s queue
+    /// they could start long after the rest of the build script's work. The first of them runs
+    /// on the build script's own jobserver token, each other one acquires a token of cargo's
+    /// jobserver first, so the build stays within its job limit.
+    pub fn files_on_own_threads<P>(&mut self, p: P) -> &mut KernelBuild
+    where
+        P: IntoIterator,
+        P::Item: AsRef<Path>,
+    {
+        assert!(
+            self.kernel_type == KernelType::Cpp,
+            "files_on_own_threads is only supported for C++ kernels"
+        );
+        self.own_thread_files
+            .extend(p.into_iter().map(|f| f.as_ref().to_path_buf()));
         self
     }
 
@@ -126,7 +149,7 @@ impl KernelBuild {
 
     pub fn compile(&mut self, output: &str) {
         println!("cargo:rerun-if-env-changed=RISC0_SKIP_BUILD_KERNELS");
-        for src in self.files.iter() {
+        for src in self.files.iter().chain(&self.own_thread_files) {
             rerun_if_changed(src);
         }
         for dep in self.deps.iter() {
@@ -160,12 +183,65 @@ impl KernelBuild {
         build
             .cpp(true)
             .debug(false)
-            .files(&self.files)
             .includes(&self.inc_dirs)
             .flag_if_supported("-fno-var-tracking")
             .flag_if_supported("-fno-var-tracking-assignments")
-            .flag_if_supported("-g0")
-            .compile(output);
+            .flag_if_supported("-g0");
+        if self.own_thread_files.is_empty() {
+            build.files(&self.files).compile(output);
+            return;
+        }
+        assert!(
+            !self.files.is_empty(),
+            "files_on_own_threads needs at least one other file for cc to archive"
+        );
+
+        let out_dir = env::var("OUT_DIR").map(PathBuf::from).unwrap();
+        let obj_dir = out_dir.join("own_thread");
+        fs::create_dir_all(&obj_dir).unwrap();
+        let msvc = is_msvc_target();
+        // SAFETY: the descriptors named in the environment are the jobserver cargo hands every
+        // build script, open for its whole run (`cc` connects the same way; any number of calls
+        // is allowed). None outside cargo: the threads then run unbounded.
+        let jobserver = unsafe { jobserver::Client::from_env() };
+        let objs = std::thread::scope(|scope| {
+            let threads: Vec<_> = self
+                .own_thread_files
+                .iter()
+                .enumerate()
+                .map(|(i, src)| {
+                    let jobserver = jobserver.as_ref();
+                    let obj = obj_dir
+                        .join(src.file_stem().unwrap())
+                        .with_extension(object_extension());
+                    // The arguments `cc` passes for each of its files, after the flags.
+                    let mut cmd = build.get_compiler().to_command();
+                    if msvc {
+                        cmd.arg(format!("-Fo{}", obj.display()));
+                    } else {
+                        cmd.arg("-o").arg(&obj);
+                    }
+                    cmd.arg("-c").arg(src);
+                    scope.spawn(move || {
+                        // The first file uses the token this build script runs on.
+                        let _token = (i > 0)
+                            .then(|| jobserver.and_then(|js| js.acquire().ok()))
+                            .flatten();
+                        let status = cmd.status().unwrap_or_else(|e| {
+                            panic!("failed to run the C++ compiler for {}: {e}", src.display())
+                        });
+                        assert!(status.success(), "failed to compile {}", src.display());
+                        obj
+                    })
+                })
+                .collect();
+            build.files(&self.files).compile(output);
+            threads
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        add_to_static_lib(&out_dir, output, &objs);
     }
 
     fn compile_cuda(&mut self, output: &str) {
@@ -443,6 +519,17 @@ pub fn nvcc_command() -> Command {
     cmd
 }
 
+/// The `-ccbin` argument for a direct nvcc invocation with a GCC/Clang host compiler: the
+/// compiler named by `NVCC_CCBIN` when set (as for the `cc` builds, where nvcc reads it), else
+/// `c++`. Part of the command, so a cache keyed by [`command_key`] follows it.
+pub fn nvcc_ccbin_arg() -> String {
+    println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
+    match env::var("NVCC_CCBIN") {
+        Ok(ccbin) if !ccbin.is_empty() => format!("-ccbin={ccbin}"),
+        _ => "-ccbin=c++".to_string(),
+    }
+}
+
 /// The C++ standard flag for nvcc. The generated circuit layouts (e.g.
 /// keccak-sys's `layout.cu.inc`) use designated initializers, a C++20 feature
 /// that GCC/Clang also accept in C++17 mode; MSVC, and nvcc's front end in MSVC
@@ -482,13 +569,19 @@ pub fn msvc_toolkit_include_dir() -> PathBuf {
     let include = cuda_toolkit_dir().join("include");
     let cuda_h = include.join("cuda.h");
     // CUDA 13 moved the CCCL headers (libcudacxx among them) under include/cccl.
-    let cuda_std_array = [include.join("cuda/std/array"), include.join("cccl/cuda/std/array")]
-        .into_iter()
-        .find(|p| p.is_file());
-    assert!(cuda_h.is_file(), "CUDA toolkit header not found at {}", cuda_h.display());
-    let cuda_std_array = cuda_std_array.unwrap_or_else(|| {
-        panic!("<cuda/std/array> not found under {}", include.display())
-    });
+    let cuda_std_array = [
+        include.join("cuda/std/array"),
+        include.join("cccl/cuda/std/array"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file());
+    assert!(
+        cuda_h.is_file(),
+        "CUDA toolkit header not found at {}",
+        cuda_h.display()
+    );
+    let cuda_std_array = cuda_std_array
+        .unwrap_or_else(|| panic!("<cuda/std/array> not found under {}", include.display()));
 
     let dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("risc0_msvc_include");
     fs::create_dir_all(&dir).unwrap();
@@ -497,7 +590,11 @@ pub fn msvc_toolkit_include_dir() -> PathBuf {
         ("risc0_toolkit_cuda_std_array.h", &cuda_std_array),
     ] {
         let path = target.to_string_lossy().replace('\\', "/");
-        fs::write(dir.join(name), format!("#pragma once\n#include \"{path}\"\n")).unwrap();
+        fs::write(
+            dir.join(name),
+            format!("#pragma once\n#include \"{path}\"\n"),
+        )
+        .unwrap();
     }
     dir
 }
@@ -513,9 +610,9 @@ fn cuda_toolkit_dir() -> PathBuf {
             }
         }
     }
-    env::var("CUDA_PATH").map(PathBuf::from).expect(
-        "cannot locate the CUDA toolkit: set CUDA_PATH, or NVCC to the full path of nvcc",
-    )
+    env::var("CUDA_PATH")
+        .map(PathBuf::from)
+        .expect("cannot locate the CUDA toolkit: set CUDA_PATH, or NVCC to the full path of nvcc")
 }
 
 /// File extension for an object file on the target toolchain.
@@ -542,7 +639,11 @@ pub fn add_to_static_lib(out_dir: &Path, name: &str, objs: &[PathBuf]) {
         }
         cmd.args(objs);
         let status = cmd.status().expect("failed to run lib.exe");
-        assert!(status.success(), "lib.exe failed to build {}", lib.display());
+        assert!(
+            status.success(),
+            "lib.exe failed to build {}",
+            lib.display()
+        );
     } else {
         let lib = out_dir.join(format!("lib{name}.a"));
         let status = Command::new(find_ar_tool())
@@ -928,30 +1029,63 @@ pub fn hash_key(parts: &[&str]) -> String {
 
 /// Find the hipcc compiler, handling Windows HIP SDK quirks.
 ///
-/// On Windows, the HIP SDK ships `hipcc` as a Perl wrapper script and
-/// `hipcc.bin.exe` as the actual compiler driver. This function checks
-/// `HIPCC` env var first, then tries `hipcc.bin.exe` on Windows (avoids
-/// Perl dependency), then falls back to `hipcc` on PATH.
+/// Checks the `HIPCC` env var first. On Windows, older HIP SDKs ship `hipcc` as a Perl wrapper
+/// script with `hipcc.bin.exe` as the actual compiler driver, and newer ones (7.x) `hipcc.exe`
+/// itself, neither on PATH by default: this looks for either under `HIP_PATH`, then under the
+/// standard install paths. Else `hipcc` on PATH.
 pub fn find_hipcc() -> String {
+    println!("cargo:rerun-if-env-changed=HIPCC");
+    println!("cargo:rerun-if-env-changed=HIP_PATH");
     if let Ok(hipcc) = env::var("HIPCC") {
         return hipcc;
     }
 
     if cfg!(target_os = "windows") {
-        // Try hipcc.bin.exe from HIP_PATH (avoids Perl dependency)
-        if let Ok(hip_path) = env::var("HIP_PATH") {
-            let candidate = PathBuf::from(&hip_path).join("bin").join("hipcc.bin.exe");
-            if candidate.exists() {
-                return candidate.to_string_lossy().into_owned();
+        for exe in ["hipcc.bin.exe", "hipcc.exe"] {
+            if let Ok(hip_path) = env::var("HIP_PATH") {
+                let candidate = PathBuf::from(&hip_path).join("bin").join(exe);
+                if candidate.exists() {
+                    return candidate.to_string_lossy().into_owned();
+                }
             }
-        }
-        // Try standard Windows ROCm install paths
-        if let Some(candidate) = find_in_windows_rocm("bin", "hipcc.bin.exe") {
-            return candidate;
+            if let Some(candidate) = find_in_windows_rocm("bin", exe) {
+                return candidate;
+            }
         }
     }
 
     "hipcc".to_string()
+}
+
+/// The flags every hipcc compile needs for its host code on the target toolchain.
+///
+/// `-fPIC` elsewhere. On MSVC, where clang rejects `-fPIC`, the C runtime the rest of the binary
+/// links: rustc links the DLL runtime (`/MD`; the static one, `/MT`, under `+crt-static`), and
+/// clang targeting MSVC defaults to neither, which leaves the STL's runtime check expecting the
+/// static one and the link failing on `cc`'s `/MD` objects (LNK2038).
+pub fn hip_host_flags() -> Vec<&'static str> {
+    if !is_msvc_target() {
+        vec!["-fPIC"]
+    } else if crt_static() {
+        vec!["-fms-runtime-lib=static", "-DNOMINMAX"]
+    } else {
+        vec!["-fms-runtime-lib=dll", "-DNOMINMAX"]
+    }
+}
+
+/// A `Command` for a direct hipcc invocation (one that bypasses `cc`): `hipcc`, with, on MSVC,
+/// the environment of the cl.exe `cc` finds (`INCLUDE`, `LIB`, `PATH`), so the MSVC headers and
+/// libraries are found outside a Visual Studio developer shell. The caller adds
+/// [`hip_host_flags`].
+pub fn hipcc_command(hipcc: &str) -> Command {
+    let mut cmd = Command::new(hipcc);
+    if is_msvc_target() {
+        let cl = cc::Build::new().cpp(true).get_compiler();
+        for (key, value) in cl.env() {
+            cmd.env(key, value);
+        }
+    }
+    cmd
 }
 
 /// Find a platform-appropriate static archive tool (`ar` / `llvm-ar`).
@@ -1074,7 +1208,7 @@ fn hip_compile_single(
     arches: &str,
     work_dir: Option<&Path>,
 ) {
-    let mut cmd = Command::new(hipcc);
+    let mut cmd = hipcc_command(hipcc);
     if let Some(dir) = work_dir {
         cmd.current_dir(dir);
     }
@@ -1274,4 +1408,267 @@ fn find_offload_bundler(hipcc: &str) -> String {
 
     // 4. PATH fallback.
     "clang-offload-bundler".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Intel (oneAPI SYCL) build utilities (cross-platform: Linux + Windows)
+// ---------------------------------------------------------------------------
+
+/// A Python 3 interpreter for the Intel kernel-generation scripts.
+///
+/// `RISC0_PYTHON` if set; otherwise the first of `python3`, `python` and `py -3` that runs.
+/// Running each one matters on Windows, where `python3` and `python` on `PATH` are usually the
+/// Microsoft Store stubs, which exist but fail.
+pub fn python_command() -> Command {
+    println!("cargo:rerun-if-env-changed=RISC0_PYTHON");
+    if let Ok(python) = env::var("RISC0_PYTHON") {
+        return Command::new(python);
+    }
+    let candidates: &[(&str, &[&str])] = &[("python3", &[]), ("python", &[]), ("py", &["-3"])];
+    for (program, args) in candidates {
+        let works = Command::new(program)
+            .args(*args)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if works {
+            let mut cmd = Command::new(program);
+            cmd.args(*args);
+            return cmd;
+        }
+    }
+    panic!("no Python 3 interpreter found (tried python3, python, py -3); set RISC0_PYTHON");
+}
+
+/// The oneAPI DPC++ compiler driver (`icpx`).
+///
+/// `RISC0_ICPX` if set; otherwise the oneAPI installation's (`ONEAPI_ROOT`, or the default
+/// install location: `/opt/intel/oneapi` on Linux, `Program Files (x86)\Intel\oneAPI` on
+/// Windows); otherwise `icpx` on `PATH`.
+pub fn find_icpx() -> PathBuf {
+    println!("cargo:rerun-if-env-changed=RISC0_ICPX");
+    println!("cargo:rerun-if-env-changed=ONEAPI_ROOT");
+    if let Ok(icpx) = env::var("RISC0_ICPX") {
+        return PathBuf::from(icpx);
+    }
+    let exe = if cfg!(windows) { "icpx.exe" } else { "icpx" };
+    let mut roots: Vec<PathBuf> = env::var_os("ONEAPI_ROOT")
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+    if cfg!(windows) {
+        let pf86 =
+            env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
+        roots.push(PathBuf::from(pf86).join("Intel").join("oneAPI"));
+    } else {
+        roots.push(PathBuf::from("/opt/intel/oneapi"));
+    }
+    for root in roots {
+        let candidate = root.join("compiler").join("latest").join("bin").join(exe);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    PathBuf::from(exe)
+}
+
+/// The `-fsycl-targets=` argument for the kernels compiled ahead of time: Intel's Battlemage GPUs
+/// (BMG-G31: Arc Pro B70 and B60; BMG-G21: Arc B580 and B570), plus SPIR-V, which the GPU driver
+/// compiles on first use for any other Intel GPU (e.g. Alchemist, Arc A770). Without spir64 a GPU
+/// missing from the list has no device code for these kernels. `RISC0_INTEL_SYCL_TARGETS`
+/// overrides the list, e.g. `intel_gpu_bmg_g31` alone builds faster for a B70. Kernel caches must
+/// include the value in their keys, so that a build for other targets doesn't reuse them.
+pub fn intel_sycl_targets_arg() -> String {
+    println!("cargo:rerun-if-env-changed=RISC0_INTEL_SYCL_TARGETS");
+    let targets = env::var("RISC0_INTEL_SYCL_TARGETS")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| "intel_gpu_bmg_g31,intel_gpu_bmg_g21,spir64".into());
+    format!("-fsycl-targets={targets}")
+}
+
+/// The file `icpx` builds for the Intel shared library `name` in `dir`:
+/// `lib<name>.so` on Linux, `<name>.dll` (with its import library `<name>.lib`) on Windows.
+pub fn intel_library_path(dir: &Path, name: &str) -> PathBuf {
+    if cfg!(windows) {
+        dir.join(format!("{name}.dll"))
+    } else {
+        dir.join(format!("lib{name}.so"))
+    }
+}
+
+/// Build the Intel (SYCL) shared library `name` in `dir` from `sources` with `icpx`, passing
+/// `args` (compile and device-link options: `-fsycl`, `-O*`, `-I*`, `-fsycl-targets=...`,
+/// `-Xs ...`; not `-shared`, `-fPIC` or `-o`) to every step. Returns the last step's output.
+///
+/// On Linux this is one `icpx -shared -fPIC` command. On Windows a DLL exports only what it is
+/// told to, so each source is compiled to an object first, the C (unmangled) functions they
+/// define are listed with `llvm-nm` into a module-definition file, and the DLL is linked with
+/// it, which also writes the import library that Rust links against.
+pub fn intel_build_library(
+    icpx: &Path,
+    args: &[std::ffi::OsString],
+    sources: &[PathBuf],
+    dir: &Path,
+    name: &str,
+) -> std::process::Output {
+    let lib = intel_library_path(dir, name);
+    if !cfg!(windows) {
+        let mut cmd = Command::new(icpx);
+        cmd.arg("-shared")
+            .arg("-fPIC")
+            .args(args)
+            .args(sources)
+            .arg("-o")
+            .arg(&lib);
+        eprintln!("  Running: {cmd:?}");
+        return cmd
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run {}: {e}", icpx.display()));
+    }
+
+    let obj_dir = dir.join(format!("{name}.objs"));
+    let _ = fs::remove_dir_all(&obj_dir);
+    fs::create_dir_all(&obj_dir).unwrap();
+    // Compile the sources in parallel: each is a separate icpx process.
+    let compiled: Vec<(PathBuf, std::process::Output)> = sources
+        .par_iter()
+        .enumerate()
+        .map(|(i, src)| {
+            let stem = src.file_stem().unwrap_or_default().to_string_lossy();
+            let obj = obj_dir.join(format!("{i}_{stem}.obj"));
+            let mut cmd = Command::new(icpx);
+            cmd.arg("-c").args(args).arg(src).arg("-o").arg(&obj);
+            eprintln!("  Running: {cmd:?}");
+            let out = cmd
+                .output()
+                .unwrap_or_else(|e| panic!("failed to run {}: {e}", icpx.display()));
+            (obj, out)
+        })
+        .collect();
+    if let Some((_, failed)) = compiled.iter().find(|(_, out)| !out.status.success()) {
+        return failed.clone();
+    }
+    let objs: Vec<PathBuf> = compiled.into_iter().map(|(obj, _)| obj).collect();
+
+    let nm = intel_tool(icpx, "llvm-nm.exe");
+    let mut exports = std::collections::BTreeSet::new();
+    for obj in &objs {
+        let out = Command::new(&nm)
+            .args(["--extern-only", "--defined-only"])
+            .arg(obj)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run {}: {e}", nm.display()));
+        assert!(
+            out.status.success(),
+            "llvm-nm failed on {}: {}",
+            obj.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut fields = line.split_whitespace();
+            let (Some(_addr), Some(kind), Some(sym)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if kind == "T" && is_exported_c_function(sym) {
+                exports.insert(sym.to_string());
+            }
+        }
+    }
+    assert!(
+        !exports.is_empty(),
+        "{name}: no C functions found to export"
+    );
+    let def = obj_dir.join(format!("{name}.def"));
+    let mut def_text = format!("LIBRARY {name}\nEXPORTS\n");
+    for sym in &exports {
+        def_text.push_str(&format!("    {sym}\n"));
+    }
+    fs::write(&def, def_text).unwrap();
+
+    // libmmd.lib and the SYCL runtime's import libraries, which oneAPI's `setvars` would
+    // otherwise have put on LIB.
+    let lib_dir = icpx.parent().and_then(Path::parent).map(|p| p.join("lib"));
+    let mut cmd = Command::new(icpx);
+    cmd.arg("-shared").args(args).args(&objs);
+    if let Some(lib_dir) = lib_dir.filter(|d| d.is_dir()) {
+        cmd.arg(format!("-L{}", lib_dir.display()));
+    }
+    cmd.arg(format!("-Wl,/DEF:{}", def.display()))
+        .arg("-o")
+        .arg(&lib);
+    eprintln!("  Running: {cmd:?}");
+    cmd.output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", icpx.display()))
+}
+
+/// Whether an object's defined function `sym` is one of the library's C entry points: not
+/// C++-mangled (`?...`), not a compiler or CRT internal (`_...`, `$...`), and not one of the C
+/// runtime's inline printf/scanf functions, which its headers define in every object using
+/// them.
+fn is_exported_c_function(sym: &str) -> bool {
+    !sym.starts_with('?')
+        && !sym.starts_with('_')
+        && !sym.starts_with('$')
+        && !["printf", "printf_s", "scanf", "scanf_s"]
+            .iter()
+            .any(|s| sym.ends_with(s))
+}
+
+/// A tool from oneAPI's bundled LLVM (`bin/compiler/<tool>` next to `icpx`), else from `PATH`.
+fn intel_tool(icpx: &Path, tool: &str) -> PathBuf {
+    icpx.parent()
+        .map(|bin| bin.join("compiler").join(tool))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(tool))
+}
+
+/// Link the Intel shared library `name` built in `dir` (see [`intel_build_library`]).
+///
+/// On Windows the DLL is also copied next to the binaries being built (`<target>/<profile>`
+/// and its `deps`), which is where Windows looks for it when they run.
+pub fn intel_link_library(dir: &Path, name: &str) {
+    println!("cargo:rustc-link-search=native={}", dir.display());
+    println!("cargo:rustc-link-lib=dylib={name}");
+    if cfg!(windows) {
+        let dll = intel_library_path(dir, name);
+        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+        // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out.
+        if let Some(profile_dir) = out_dir.ancestors().nth(3) {
+            for dest in [profile_dir.to_path_buf(), profile_dir.join("deps")] {
+                if dest.is_dir() {
+                    let target = dest.join(dll.file_name().unwrap());
+                    if let Err(e) = fs::copy(&dll, &target) {
+                        println!(
+                            "cargo:warning=could not copy {} to {}: {e}",
+                            dll.display(),
+                            target.display()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Link the SYCL runtime for Rust code that calls it directly: `libsycl.so` on Linux. On
+/// Windows the runtime is versioned (`sycl8.dll`) and only the Intel DLLs call it, which
+/// `icpx` links against it itself, so there is nothing to add.
+pub fn intel_link_sycl_runtime() {
+    if cfg!(windows) {
+        return;
+    }
+    if let Ok(oneapi_root) = env::var("ONEAPI_ROOT") {
+        let lib_dir = PathBuf::from(&oneapi_root).join("lib");
+        if lib_dir.exists() {
+            println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        }
+    }
+    let intel_lib = PathBuf::from("/opt/intel/oneapi/compiler/latest/lib");
+    if intel_lib.exists() {
+        println!("cargo:rustc-link-search=native={}", intel_lib.display());
+    }
+    println!("cargo:rustc-link-lib=dylib=sycl");
 }

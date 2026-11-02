@@ -72,8 +72,19 @@ void esimd_fri_fold(sycl::queue& q,
         scalar_ext_mul(h_powers + i*4, prev, h_mix);
     }
 
+    // The kernel walks the input rows in order, row r holding the value that mix^bitrev(r)
+    // multiplies, so hand it the powers in that order: h_powers_by_row[r] = mix^bitrev(r).
+    // (Indexing the rows by bitrev(fi) in the kernel instead, as before, makes the Windows
+    // driver's IGC (32.0.101.8976) fail on the unrolled loop with "Internal Compiler Error:
+    // Divide by zero" or "Access violation". The sum is the same either way.)
+    uint32_t h_powers_by_row[kFriFold * 4];
+    for (uint32_t r = 0; r < kFriFold; r++) {
+        uint32_t fi = bit_rev_scalar(r, kFriFoldBits);
+        for (int c = 0; c < 4; c++) h_powers_by_row[r * 4 + c] = h_powers[fi * 4 + c];
+    }
+
     auto* d_powers = sycl::malloc_device<uint32_t>(kFriFold * 4, q);
-    q.memcpy(d_powers, h_powers, kFriFold * 4 * 4); q.wait();
+    q.memcpy(d_powers, h_powers_by_row, kFriFold * 4 * 4); q.wait();
 
     auto* pout = d_out;
     auto* pin = d_in;
@@ -89,11 +100,11 @@ void esimd_fri_fold(sycl::queue& q,
 
             FpExt4 tot;     // zero-initialized
 
+            // fi is the input row here; ppow[fi] is the power that row's value takes.
             for (uint32_t fi = 0; fi < kFriFold; fi++) {
-                uint32_t rev_fi = bit_rev_scalar(fi, kFriFoldBits);
-                uint32_t rev_base = rev_fi * count + base;
+                uint32_t rev_base = fi * count + base;
 
-                // Load precomputed mix^fi (broadcast to all 16 lanes)
+                // Load the precomputed power for row fi (broadcast to all 16 lanes)
                 FpExt4 curMix(bb31::Vec16(*(ppow + fi*4 + 0)),
                               bb31::Vec16(*(ppow + fi*4 + 1)),
                               bb31::Vec16(*(ppow + fi*4 + 2)),
@@ -108,7 +119,7 @@ void esimd_fri_fold(sycl::queue& q,
                 } else {
                     factor = FpExt4();
                     for (uint32_t lane = 0; lane < 16 && base + lane < count; lane++) {
-                        uint32_t ri = rev_fi * count + base + lane;
+                        uint32_t ri = fi * count + base + lane;
                         factor.c[0][lane] = *(pin + 0*count*kFriFold + ri);
                         factor.c[1][lane] = *(pin + 1*count*kFriFold + ri);
                         factor.c[2][lane] = *(pin + 2*count*kFriFold + ri);

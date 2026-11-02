@@ -234,6 +234,28 @@ static int sort_env(const char* name, int def) {
 #ifndef SORT_CH
 #define SORT_CH 256u
 #endif
+template <uint32_t NB> class WitgenSortScan;
+class WitgenAccumScan;
+
+// The width of a one-work-group scan: `want`, halved until the device runs kernel `K` that wide.
+// 1024 on Battlemage; 512 on Alchemist (Arc A770), where these kernels, built in 256-GRF mode, run
+// at most 512 work-items per work-group.
+template <typename K>
+static uint32_t scan_width(sycl::queue& q, uint32_t want) {
+  static uint32_t width = 0;
+  if (width == 0) {
+    auto dev = q.get_device();
+    auto id = sycl::get_kernel_id<K>();
+    auto kb = sycl::get_kernel_bundle<sycl::bundle_state::executable>(q.get_context(), {dev}, {id});
+    size_t max = kb.get_kernel(id).template get_info<
+        sycl::info::kernel_device_specific::work_group_size>(dev);
+    uint32_t w = want;
+    while (w > 1 && w > max) w >>= 1;
+    width = w;
+  }
+  return width;
+}
+
 static constexpr uint32_t SORT_NB = 128;
 template <uint32_t NB>
 static void sort_range_t(sycl::queue& q, const risc0::circuit::rv32im_v2::intel::PreflightCycle* cyc,
@@ -256,11 +278,11 @@ static void sort_range_t(sycl::queue& q, const risc0::circuit::rv32im_v2::intel:
     for (uint32_t k = 0; k < NB; k++) cnt[size_t(k) * nblk + b] = c[k];
   });
   const uint32_t tot = NB * nblk;
-  constexpr uint32_t SW = 1024;
+  const uint32_t SW = scan_width<WitgenSortScan<NB>>(q, 1024);
   const uint32_t R = (tot + SW - 1) / SW;
   q.submit([&](sycl::handler& h) {
     sycl::local_accessor<uint32_t, 1> sm(SW, h);
-    h.parallel_for(sycl::nd_range<1>(SW, SW), [=](sycl::nd_item<1> it) {
+    h.parallel_for<WitgenSortScan<NB>>(sycl::nd_range<1>(SW, SW), [=](sycl::nd_item<1> it) {
       uint32_t l = it.get_local_id(0);
       uint32_t a = l * R, z = sycl::min(a + R, tot);
       uint32_t s = 0;
@@ -618,7 +640,7 @@ const char* risc0_circuit_rv32im_intel_accum(
       const size_t col0 = accum_cols - 4;
       const uint32_t n = last_cycle;
       constexpr uint32_t CH = 256;     // rows per work-item
-      constexpr uint32_t SW = 1024;    // lanes in the partials scan
+      const uint32_t SW = scan_width<WitgenAccumScan>(q, 1024);  // lanes in the partials scan
       const uint32_t nblk = (n + CH - 1) / CH;
       const uint32_t R = (nblk + SW - 1) / SW;
       static risc0::Fp* d_part = nullptr;
@@ -640,7 +662,7 @@ const char* risc0_circuit_rv32im_intel_accum(
         });
         q.submit([&](sycl::handler& h) {
           sycl::local_accessor<risc0::Fp, 1> sm(SW, h);
-          h.parallel_for(sycl::nd_range<1>(4 * SW, SW), [=](sycl::nd_item<1> it) {
+          h.parallel_for<WitgenAccumScan>(sycl::nd_range<1>(4 * SW, SW), [=](sycl::nd_item<1> it) {
             uint32_t l = it.get_local_id(0), c = it.get_group(0);
             risc0::Fp* pc = part + size_t(c) * nblk;
             uint32_t lo = l * R, hi = sycl::min(lo + R, nblk);
@@ -689,7 +711,14 @@ const char* risc0_circuit_rv32im_intel_accum(
             for (size_t j = 0; j < machineColumns - 1; j++) {
               for (size_t k = 0; k < 4; k++) {
                 size_t col = kUserAccumSplit + j * 4 + k;
-                ab.set(cycle, col, ab.get(cycle, col) + prev[k]);
+                // An unset (INVALID) cell counts as 0: INVALID + prev[k] is unreduced when
+                // prev[k] is 0, and the NTT mishandles it (see phase 3 of
+                // risc0_circuit_rv32im_cpu_accum).
+                risc0::Fp cur = ab.get(cycle, col);
+                if (cur == risc0::Fp::invalid()) {
+                  cur = risc0::Fp(0);
+                }
+                ab.set(cycle, col, cur + prev[k]);
               }
             }
           });

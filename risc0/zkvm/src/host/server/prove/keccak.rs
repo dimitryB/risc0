@@ -18,23 +18,36 @@ use anyhow::{ensure, Result};
 use risc0_binfmt::read_sha_halfs;
 use risc0_circuit_keccak::{
     get_control_id,
-    prove::{keccak_prover, zkr::get_keccak_zkr},
+    prove::{keccak_prover, zkr::get_keccak_zkr_shared, HostWitness},
     KECCAK_CONTROL_IDS,
 };
 use risc0_core::field::baby_bear::BabyBearElem;
 use risc0_zkp::core::digest::{Digest, DIGEST_SHORTS};
 
 use crate::{
-    host::client::env::ProveKeccakRequest, host::recursion::prove::prove_zkr,
+    host::client::env::ProveKeccakRequest, host::recursion::prove::prove_shared_zkr,
     receipt::SuccinctReceipt, Unknown,
 };
 
 /// Generate a keccak proof that has been lifted.
 pub(crate) fn prove_keccak(request: &ProveKeccakRequest) -> Result<SuccinctReceipt<Unknown>> {
+    prove_keccak_with(request, None)
+}
+
+/// [prove_keccak], from the request's witness if `risc0_circuit_keccak::prove::host_witness` has
+/// made it already.
+pub(crate) fn prove_keccak_with(
+    request: &ProveKeccakRequest,
+    witness: Option<HostWitness>,
+) -> Result<SuccinctReceipt<Unknown>> {
     let _gpu = super::exclusive_gpu();
+    let t_prove = std::time::Instant::now();
     let zkr_input = {
         let prover = keccak_prover()?;
-        let seal = prover.prove(&request.input, request.po2)?;
+        let seal = match witness.and_then(|witness| prover.prove_host_witness(witness)) {
+            Some(seal) => seal?,
+            None => prover.prove(&request.input, request.po2)?,
+        };
 
         let claim_digest: Digest = read_sha_halfs(&mut VecDeque::from_iter(
             bytemuck::checked::cast_slice::<_, BabyBearElem>(&seal[0..DIGEST_SHORTS])
@@ -69,10 +82,19 @@ pub(crate) fn prove_keccak(request: &ProveKeccakRequest) -> Result<SuccinctRecei
         zkr_input
     };
 
-    prove_zkr(
-        get_keccak_zkr(request.po2)?,
+    let prove_ms = t_prove.elapsed().as_secs_f64() * 1000.0;
+    let t_lift = std::time::Instant::now();
+    let receipt = prove_shared_zkr(
+        get_keccak_zkr_shared(request.po2)?,
         get_control_id(request.po2),
         KECCAK_CONTROL_IDS.to_vec(),
         bytemuck::cast_slice(zkr_input.as_slice()),
-    )
+    );
+    if std::env::var_os("RISC0_VERBOSE").is_some() {
+        eprintln!(
+            "[keccak] prove={prove_ms:.1}ms lift={:.1}ms",
+            t_lift.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    receipt
 }

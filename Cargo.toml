@@ -79,7 +79,14 @@ opt-level = 3
 [profile.release]
 lto = true
 
-# Note: The sppark patch path is only needed for CUDA/ROCm builds.
-# Intel builds don't depend on sppark.
-# [patch.crates-io]
-# sppark = { path = "/home/hotaisle/r0remoteamd/risc0-sppark/rust" }
+# sppark from the hemilabs fork, as zk-miner builds it. Released sppark (through 0.1.15) lacks
+# four __syncthreads() in the GS NTT and in polynomial division (shared-memory races that corrupt
+# proofs; upstream fixed them on master in 9e5c795 and 6b931f3), and its HIP shim defines a
+# __syncwarp() that ROCm 7's headers also declare, so ROCm builds stop there. The fork has both
+# fixes and a __syncwarp() that also orders LDS accesses on RDNA. Only CUDA/ROCm builds use sppark.
+# This revision (the fork's zkminer/windows-amd) also builds on Windows: with MSVC as nvcc's host
+# compiler, and with its `sppark` -> `..` symlink checked out as a plain file, as cargo does there.
+# A [patch] applies to this workspace's builds only: a crate depending on this repository resolves
+# sppark through its own lockfile and patches.
+[patch.crates-io]
+sppark = { git = "https://github.com/hemilabs/risc0-sppark", rev = "5f68eb3eb9e4e06c9837d22aade07ed40432889f" }

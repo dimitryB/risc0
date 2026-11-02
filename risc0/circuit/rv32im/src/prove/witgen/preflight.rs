@@ -38,22 +38,30 @@ use crate::{
 };
 
 use super::{
-    bigint::BigIntState, node_addr_to_idx, node_idx_to_addr, paged_map::PagedMap,
+    bigint::BigIntState,
+    node_addr_to_idx, node_idx_to_addr,
+    paged_map::{PagedMap, WordTxnMap},
     poseidon2::Checksum,
 };
 
-#[derive(Clone, Debug, Default)]
+/// Per-row side data. The large states live in side vectors of the trace (`p2_states`,
+/// `sha2_states`, `bigint_states`) and the row keeps their index: this keeps a row at 16 bytes
+/// (it was 160, the size of `Poseidon2State`), and the 1M-row vector is written by the body
+/// and read by the injector and the zcheck pass every segment.
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) enum Back {
     #[default]
     None,
     Ecall(u32, u32, u32),
-    #[debug("Poseidon2")]
-    Poseidon2(Poseidon2State),
-    #[debug("Sha2")]
-    Sha2(Sha2State),
-    #[debug("BigInt")]
-    BigInt(BigIntState),
+    /// Index into `PreflightTrace::p2_states`.
+    Poseidon2(u32),
+    /// Index into `PreflightTrace::sha2_states`.
+    Sha2(u32),
+    /// Index into `PreflightTrace::bigint_states`.
+    BigInt(u32),
 }
+
+const _: () = assert!(std::mem::size_of::<Back>() == 16);
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PreflightTrace {
@@ -65,8 +73,28 @@ pub(crate) struct PreflightTrace {
     pub bigint_bytes: Vec<u8>,
     #[debug("{}", backs.len())]
     pub backs: Vec<Back>,
+    #[debug("{}", p2_states.len())]
+    pub p2_states: Vec<Poseidon2State>,
+    #[debug("{}", sha2_states.len())]
+    pub sha2_states: Vec<Sha2State>,
+    #[debug("{}", bigint_states.len())]
+    pub bigint_states: Vec<BigIntState>,
     pub table_split_cycle: u32,
     pub rand_z: ExtVal,
+    /// Pinned copy of cycles|txns|bigint_bytes for the CUDA/HIP witgen upload (see cuda_stage).
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    #[debug(skip)]
+    pub staged: Option<std::sync::Arc<super::cuda_stage::StagedTrace>>,
+    /// The injector left out the five per-cycle columns (CYCLE_COLS): witgen writes them.
+    pub cycle_cols_deferred: bool,
+}
+
+// Return the big vectors for reuse by a later segment's preflight (see cuda_stage).
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+impl Drop for PreflightTrace {
+    fn drop(&mut self) {
+        super::cuda_stage::recycle_trace(self);
+    }
 }
 
 pub(crate) struct Preflight<'a> {
@@ -81,8 +109,8 @@ pub(crate) struct Preflight<'a> {
     txn_idx: u32,
     bigint_idx: u32,
     user_cycles: u32,
-    orig_words: PagedMap,
-    prev_cycle: PagedMap,
+    /// orig_words + prev_cycle (see `WordTxnMap`).
+    word_txns: WordTxnMap,
     page_memory: PagedMap,
     /// First guest sys_poseidon2 ecall this segment cannot prove (pc, a0, a1, a2).
     unprovable_poseidon2: Option<(u32, u32, u32, u32)>,
@@ -110,6 +138,7 @@ impl Segment {
         preflight.generate_tables()?;
         preflight.wrap_memory_txns()?;
         preflight.update_p2_zcheck()?;
+        std::mem::replace(&mut preflight.word_txns, WordTxnMap::placeholder()).recycle();
 
         tracing::trace!("paging_cycles: {}", preflight.pager.cycles);
 
@@ -133,13 +162,26 @@ impl<'a> Preflight<'a> {
                 page_memory.insert(&(node_addr + i), digest.as_words()[i]);
             }
         }
-        Self {
-            trace: PreflightTrace {
+        // Reserve the trace up front and back it with huge pages (see `advise_huge`). SimpleLoop
+        // makes ~4.2 memory transactions per cycle; a segment that makes more grows `txns`.
+        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        let trace = super::cuda_stage::recycled_trace(total_cycles, rand_z);
+        #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+        let trace = {
+            let trace = PreflightTrace {
                 cycles: Vec::with_capacity(total_cycles),
+                txns: Vec::with_capacity(total_cycles * 5),
                 backs: Vec::with_capacity(total_cycles),
                 rand_z,
                 ..Default::default()
-            },
+            };
+            super::advise_huge(&trace.cycles);
+            super::advise_huge(&trace.txns);
+            super::advise_huge(&trace.backs);
+            trace
+        };
+        Self {
+            trace,
             segment,
             pager: PagedMemory::new(
                 segment.partial_image.clone(),
@@ -153,8 +195,7 @@ impl<'a> Preflight<'a> {
             bigint_idx: 0,
             user_cycle: 0,
             user_cycles: 0,
-            orig_words: Default::default(),
-            prev_cycle: Default::default(),
+            word_txns: WordTxnMap::take(),
             page_memory,
             unprovable_poseidon2: None,
         }
@@ -224,9 +265,16 @@ impl<'a> Preflight<'a> {
         for txn in self.trace.txns.iter_mut() {
             // tracing::trace!("{txn:?}");
             let addr = WordAddr(txn.addr);
+            // The final cycle of this address and its original value (not modified here).
+            let wt = *self.word_txns.get(&addr).unwrap();
+            let last_cycle = wt.prev;
+            if last_cycle == u32::MAX {
+                // (The old prev_cycle map's `get(..).unwrap()` panicked here too.)
+                bail!("memory transaction at {addr:?} without a final cycle");
+            }
             if txn.prev_cycle == u32::MAX {
                 // If first cycle for a particular address, set 'prev_cycle' to final cycle
-                txn.prev_cycle = self.prev_cycle.get(&addr).unwrap();
+                txn.prev_cycle = last_cycle;
             } else {
                 // Otherwise, compute cycle diff and another diff
                 ensure!(txn.cycle != txn.prev_cycle);
@@ -235,8 +283,8 @@ impl<'a> Preflight<'a> {
             }
 
             // If last cycle, set final value to original value
-            if txn.cycle == self.prev_cycle.get(&addr).unwrap() {
-                txn.word = self.orig_words.get(&addr).unwrap_or_default();
+            if txn.cycle == last_cycle {
+                txn.word = if wt.has_orig { wt.orig } else { 0 };
             }
         }
         Ok(())
@@ -244,8 +292,9 @@ impl<'a> Preflight<'a> {
 
     fn update_p2_zcheck(&mut self) -> Result<()> {
         let mut checksum = Checksum::new(&self.trace.rand_z);
-        for (row, back) in self.trace.backs.iter_mut().enumerate() {
-            if let Back::Poseidon2(p2_state) = back {
+        for (row, back) in self.trace.backs.iter().enumerate() {
+            if let Back::Poseidon2(p2_idx) = *back {
+                let p2_state = &mut self.trace.p2_states[p2_idx as usize];
                 let cycle = &self.trace.cycles[row];
                 let next_cycle = &self.trace.cycles[row + 1];
                 let state = CycleState::from_u32((cycle.major as u32 - 7) * 8 + cycle.minor as u32)
@@ -471,12 +520,13 @@ impl<'a> Preflight<'a> {
 
     pub(crate) fn on_bigint_cycle(&mut self, cur_state: CycleState, bigint: &BigIntState) {
         self.add_witness(&bigint.bytes);
+        let back = Back::BigInt(push_idx(&mut self.trace.bigint_states, bigint));
         self.add_cycle_special(
             cur_state,
             bigint.next_state,
             self.pc.0,
             0, //paging_idx
-            Back::BigInt(bigint.clone()),
+            back,
         );
         self.user_cycles += 1;
     }
@@ -594,8 +644,12 @@ impl Risc0Context for Preflight<'_> {
             self.pager.load(addr)?
         };
         if op == LoadOp::Record {
-            self.orig_words.get_mut(&addr).get_or_insert(word);
-            let prev_cycle = self.prev_cycle.insert_default(&addr, cycle, u32::MAX);
+            let wt = self.word_txns.get_mut(&addr);
+            if !wt.has_orig {
+                wt.orig = word;
+                wt.has_orig = true;
+            }
+            let prev_cycle = std::mem::replace(&mut wt.prev, cycle);
             let txn = RawMemoryTransaction {
                 addr: addr.0,
                 cycle,
@@ -621,7 +675,7 @@ impl Risc0Context for Preflight<'_> {
             self.pager.store(addr, word)?;
             prev_word
         };
-        let prev_cycle = self.prev_cycle.insert_default(&addr, cycle, u32::MAX);
+        let prev_cycle = std::mem::replace(&mut self.word_txns.get_mut(&addr).prev, cycle);
         let txn = RawMemoryTransaction {
             addr: addr.0,
             cycle,
@@ -676,12 +730,13 @@ impl Risc0Context for Preflight<'_> {
     }
 
     fn on_sha2_cycle(&mut self, cur_state: CycleState, sha2: &Sha2State) {
+        let back = Back::Sha2(push_idx(&mut self.trace.sha2_states, sha2));
         self.add_cycle_special(
             cur_state,
             sha2.next_state,
             self.pc.0,
             node_addr_to_idx(sha2.state_out_addr),
-            Back::Sha2(sha2.clone()),
+            back,
         );
         self.user_cycles += 1;
     }
@@ -699,12 +754,13 @@ impl Risc0Context for Preflight<'_> {
             self.unprovable_poseidon2 =
                 Some((self.pc.0, p2.state_addr, p2.buf_in_addr, p2.buf_out_addr));
         }
+        let back = Back::Poseidon2(push_idx(&mut self.trace.p2_states, p2));
         self.add_cycle_special(
             cur_state,
             p2.next_state,
             self.pc.0,
             node_addr_to_idx(WordAddr(p2.buf_out_addr)),
-            Back::Poseidon2(p2.clone()),
+            back,
         );
         self.user_cycles += 1;
     }
@@ -712,6 +768,12 @@ impl Risc0Context for Preflight<'_> {
     fn ecall_bigint(&mut self) -> Result<()> {
         super::bigint::ecall_preflight(self)
     }
+}
+
+/// Append a copy of `state` to a side vector and return its index (see [`Back`]).
+fn push_idx<T: Clone>(v: &mut Vec<T>, state: &T) -> u32 {
+    v.push(state.clone());
+    (v.len() - 1) as u32
 }
 
 impl InsnKind {

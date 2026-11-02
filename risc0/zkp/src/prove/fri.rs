@@ -113,17 +113,25 @@ pub fn fri_prove<H: Hal, F>(
     // Batch-collect inner tree proofs for all queries at once
     let inner_results = inner(&positions);
 
-    // Batch-collect FRI round proofs for all queries
-    let mut round_results: Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> = Vec::new();
+    // Batch-collect FRI round proofs for all queries (each round's positions follow from the
+    // previous round's alone, so every round's gathers go in one batch)
+    let mut round_groups: Vec<Vec<usize>> = Vec::with_capacity(rounds.len());
     let mut cur_positions = positions;
     for round in rounds.iter() {
         let groups: Vec<usize> = cur_positions
             .iter()
             .map(|&pos| pos % (round.domain / FRI_FOLD))
             .collect();
-        round_results.push(round.merkle.batch_prove(hal, &groups));
+        round_groups.push(groups.clone());
         cur_positions = groups;
     }
+    let round_jobs: Vec<(&MerkleTreeProver<H>, &[usize])> = rounds
+        .iter()
+        .zip(&round_groups)
+        .map(|(round, groups)| (&round.merkle, groups.as_slice()))
+        .collect();
+    let round_results: Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> =
+        MerkleTreeProver::batch_prove_many(hal, &round_jobs);
 
     // Write to IOP in correct query-major order (matching verifier's read order)
     for q in 0..QUERIES {

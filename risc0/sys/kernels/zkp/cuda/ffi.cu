@@ -18,11 +18,42 @@
 #include "kernels.h"
 
 #include "vendor/nvtx3/nvtx3.hpp"
+#include "thp_pinned.h"
+#include "device_alloc.h"
 
 #include <cstdint>
 #include <exception>
 
+// eval_u v2 (kernels.cu)
+#define EU_J 16
+#define EU_THREADS 256
+__global__ void eu2_pows(FpExt* pw, FpExt* ps, const FpExt* xs, uint32_t S, uint32_t chunk);
+__global__ void eu2_main(FpExt* partial, const Fp* __restrict__ coeffs, const uint32_t* __restrict__ which,
+                         const FpExt* __restrict__ xs, const FpExt* __restrict__ pw,
+                         const FpExt* __restrict__ ps, uint32_t deg, uint32_t chunk);
+__global__ void eu2_reduce(FpExt* out, const FpExt* partial, uint32_t S);
+__global__ void mix_poly_coeffs_v2(FpExt* __restrict__ out, const Fp* __restrict__ in,
+                                   const uint32_t* __restrict__ combos,
+                                   const FpExt* __restrict__ mixStart,
+                                   const FpExt* __restrict__ mix, const uint32_t inputSize,
+                                   const uint32_t count);
+#ifdef __HIPCC__
+__global__ void mix_poly_coeffs_v6(FpExt* __restrict__ out, const Fp* __restrict__ in,
+                                   const uint32_t* __restrict__ combos,
+                                   const FpExt* __restrict__ mixStart,
+                                   const FpExt* __restrict__ mix, const uint32_t inputSize,
+                                   const uint32_t count);
+#endif
+__global__ void gather_samples(Fp* dst, const Fp* src, const uint32_t* idxs, const uint32_t n,
+                               const uint32_t size, const uint32_t stride);
+__global__ void combos_sub(FpExt* combos, const FpExt* deltas, const uint32_t* offsets,
+                           const uint32_t count);
+
 extern "C" {
+
+void risc0_zkp_cuda_set_oom_hook(void (*hook)()) {
+  risc0_cuda_oom_hook = hook;
+}
 
 // Trigger CUDA module loading for risc0-zkp kernels (eltwise, sha, etc.)
 // by launching a dummy kernel. All kernels in this compilation unit share
@@ -87,6 +118,78 @@ const char* risc0_zkp_cuda_fill_u32(uint32_t* buf, uint32_t value, uint32_t coun
   return nullptr;
 }
 
+#ifdef __HIPCC__
+// The prefill queue: a dedicated hardware queue limited to RISC0_HIP_PREFILL_CUS compute units
+// (default 2, one WGP; 0 = all of them). A full-device fill beside the
+// latency-bound eval_check prologue (ef_prep: one thread, then constant-table copies) slowed it
+// from ~0.65 to ~2.7 ms on an RX 9070 XT by saturating DRAM; one WGP fills ~1 GB in ~10-20 ms
+// beside ef_eval_split (~160 ms) instead. Callers hold risc0_hip_hop::lock().
+static hipStream_t prefill_stream(int dev) {
+  static hipStream_t streams[16] = {};
+  static int state[16] = {};
+  if (dev < 0 || dev >= 16)
+    return nullptr;
+  if (!state[dev]) {
+    state[dev] = -1;
+    const char* v = std::getenv("RISC0_HIP_PREFILL_CUS");
+    int n = v && *v ? std::atoi(v) : 2;
+    uint32_t cus[8];
+    for (int i = 0; i < 8; i++) {
+      int lo = 32 * i;
+      cus[i] = n <= 0 || n >= lo + 32 ? ~0u : (n > lo ? (1u << (n - lo)) - 1 : 0u);
+    }
+    if (hipExtStreamCreateWithCUMask(&streams[dev], 8, cus) == hipSuccess) {
+      state[dev] = 1;
+    } else {
+      (void)hipGetLastError();
+      streams[dev] = nullptr;
+    }
+  }
+  return streams[dev];
+}
+
+// Fill forked off the persistent stream onto the prefill queue: it runs after everything queued on
+// the persistent stream so far, beside later work. *done is the event risc0_zkp_hip_fill_join
+// waits for (nullptr: the fill was queued on the persistent stream).
+const char* risc0_zkp_hip_fill_fork(uint32_t* buf, uint32_t value, size_t count, void** done) {
+  try {
+    hipStream_t main = getPersistentStream();
+    *done = nullptr;
+    std::unique_lock<std::recursive_mutex> lk(risc0_hip_hop::lock());
+    int dev = -1;
+    hipStream_t side = hipGetDevice(&dev) == hipSuccess ? prefill_stream(dev) : nullptr;
+    static hipEvent_t forkEv[16] = {};
+    hipEvent_t ev = nullptr;
+    if (side && dev < 16 && (forkEv[dev] || hipEventCreateWithFlags(&forkEv[dev], hipEventDisableTiming) == hipSuccess) &&
+        hipEventCreateWithFlags(&ev, hipEventDisableTiming) == hipSuccess &&
+        hipEventRecord(forkEv[dev], main) == hipSuccess && hipStreamWaitEvent(side, forkEv[dev], 0) == hipSuccess) {
+      CUDA_OK(value == 0 ? hipMemsetAsync(buf, 0, count * 4, side) : hipMemsetD32Async(buf, value, count, side));
+      CUDA_OK(hipEventRecord(ev, side));
+      *done = ev;
+      return nullptr;
+    }
+    (void)hipGetLastError();
+    if (ev)
+      (void)hipEventDestroy(ev);
+    CUDA_OK(value == 0 ? hipMemsetAsync(buf, 0, count * 4, main) : hipMemsetD32Async(buf, value, count, main));
+  } catch (const std::exception& err) {
+    return strdup(err.what());
+  }
+  return nullptr;
+}
+
+// Order the persistent stream after a forked fill (host = 1: wait on the host instead) and release
+// its event.
+const char* risc0_zkp_hip_fill_join(void* done, uint32_t host) {
+  try {
+    CUDA_OK(risc0_hip_hop::join_fill(host ? nullptr : getPersistentStream(), (hipEvent_t)done));
+  } catch (const std::exception& err) {
+    return strdup(err.what());
+  }
+  return nullptr;
+}
+#endif
+
 const char* risc0_zkp_cuda_eltwise_add_fp(Fp* out, const Fp* x, const Fp* y, uint32_t count) {
   return launchKernel(eltwise_add_fp, count, 0, out, x, y, count);
 }
@@ -146,8 +249,41 @@ const char* risc0_zkp_cuda_mix_poly_coeffs(FpExt* out,
                                            const FpExt* mix,
                                            const uint32_t inputSize,
                                            const uint32_t count) {
+  // v2 keeps the mix powers and combo ids in shared memory (20 bytes per input).
+#ifdef __HIPCC__
+  // ROCm: v6 (2 elements per thread, per-combo register accumulators; slower below 2^16 rows)
+  // unless RISC0_HIP_MIX_V6=0.
+  static const bool v6 = [] {
+    const char* e = getenv("RISC0_HIP_MIX_V6");
+    return !(e && e[0] == '0');
+  }();
+  if (v6 && inputSize <= 2048 && count >= (1u << 16) && (count % 2) == 0 &&
+      (reinterpret_cast<uintptr_t>(in) & 7) == 0) {
+    // >= 2^20 rows (~1.2 ms): on a side hardware queue (hip_hop.h).
+    return launchKernelHop(risc0_hip_hop::want(risc0_hip_hop::kMix, count, 20), mix_poly_coeffs_v6, count / 2,
+                           inputSize * (sizeof(FpExt) + sizeof(uint32_t)), out, in, combos, mixStart,
+                           mix, inputSize, count);
+  }
+#endif
+  if (inputSize <= 2048) {
+    return launchKernel(mix_poly_coeffs_v2, count, inputSize * (sizeof(FpExt) + sizeof(uint32_t)),
+                        out, in, combos, mixStart, mix, inputSize, count);
+  }
   return launchKernel(mix_poly_coeffs, count, inputSize * sizeof(FpExt),
                       out, in, combos, mixStart, mix, inputSize, count);
+}
+
+const char* risc0_zkp_cuda_gather_samples(Fp* dst, const Fp* src, const uint32_t* idxs,
+                                          const uint32_t n, const uint32_t size,
+                                          const uint32_t stride) {
+  return launchKernel(gather_samples, n * size, 0, dst, src, idxs, n, size, stride);
+}
+
+const char* risc0_zkp_cuda_combos_sub(FpExt* combos,
+                                      const FpExt* deltas,
+                                      const uint32_t* offsets,
+                                      const uint32_t count) {
+  return launchKernel(combos_sub, count, 0, combos, deltas, offsets, count);
 }
 
 const char* risc0_zkp_cuda_batch_bit_reverse(Fp* io, const uint32_t nBits, const uint32_t count) {
@@ -160,8 +296,67 @@ const char* risc0_zkp_cuda_batch_evaluate_any(FpExt* out,
                                               const FpExt* xs,
                                               uint32_t shared_size,
                                               const uint32_t count,
-                                              const uint32_t deg) {
-  return launchKernel(batch_evaluate_any, count, shared_size, out, coeffs, which, xs, deg);
+                                              const uint32_t deg,
+                                              const uint32_t nEvals) {
+  // eval_u v2: split-K over (chunk, eval point) with per-point power tables. Falls back to
+  // the original kernel for small or unaligned inputs.
+  const uint32_t minChunk = EU_J * EU_THREADS;
+  if (nEvals == 0 || deg < minChunk || (deg % minChunk) != 0 ||
+      (reinterpret_cast<uintptr_t>(coeffs) & 15) != 0) {
+    return launchKernel(batch_evaluate_any, count, shared_size, out, coeffs, which, xs, deg);
+  }
+  try {
+    cudaStream_t stream = getPersistentStream();
+#ifdef __HIPCC__
+    // ROCm (lazy eu2_main): fewer, longer blocks measured ~5% faster on the rv32im data group.
+    const uint32_t targetBlocks = 512;
+#else
+    const uint32_t targetBlocks = 1024;
+#endif
+    uint32_t maxS = deg / minChunk;
+    uint32_t S = 1;
+    while (S < maxS && (uint64_t)S * nEvals < targetBlocks)
+      S <<= 1;
+    uint32_t chunk = deg / S;
+    size_t pwBytes = (size_t)nEvals * EU_THREADS * sizeof(FpExt);
+    size_t psBytes = (size_t)nEvals * S * sizeof(FpExt);
+    char* scratch = nullptr;
+#ifdef __HIPCC__
+    // A grow-only scratch buffer per device instead of the stream-ordered pool: the launches
+    // that use it are ordered on the persistent stream, and growing frees with an implicit
+    // device sync.
+    {
+      static char* s_scratch[16] = {};
+      static size_t s_scratch_bytes[16] = {};
+      int dev = getCachedDevice();
+      if (pwBytes + 2 * psBytes > s_scratch_bytes[dev]) {
+        if (s_scratch[dev])
+          CUDA_OK(cudaFree(s_scratch[dev]));
+        CUDA_OK(cudaMalloc(&s_scratch[dev], pwBytes + 2 * psBytes));
+        s_scratch_bytes[dev] = pwBytes + 2 * psBytes;
+      }
+      scratch = s_scratch[dev];
+    }
+#else
+    // Stream-ordered scratch: safe against concurrent callers sharing the stream.
+    CUDA_OK(cudaMallocAsync(&scratch, pwBytes + 2 * psBytes, stream));
+#endif
+    FpExt* pw = reinterpret_cast<FpExt*>(scratch);
+    FpExt* ps = reinterpret_cast<FpExt*>(scratch + pwBytes);
+    FpExt* part = reinterpret_cast<FpExt*>(scratch + pwBytes + psBytes);
+    eu2_pows<<<nEvals, EU_THREADS, 0, stream>>>(pw, ps, xs, S, chunk);
+    eu2_main<<<dim3(S, nEvals), EU_THREADS, 0, stream>>>(part, coeffs, which, xs, pw, ps, deg, chunk);
+    eu2_reduce<<<nEvals, 32, 0, stream>>>(out, part, S);
+    CUDA_OK(cudaGetLastError());
+#ifndef __HIPCC__
+    CUDA_OK(cudaFreeAsync(scratch, stream));
+#endif
+  } catch (const std::exception& err) {
+    return strdup(err.what());
+  } catch (...) {
+    return strdup("Generic exception");
+  }
+  return nullptr;
 }
 
 const char* risc0_zkp_cuda_gather_sample(
@@ -204,9 +399,9 @@ const char* risc0_zkp_cuda_scatter_from_host(Fp* into,
     static Fp* d_values[16] = {};
     static size_t cap_d_index[16] = {}, cap_d_offsets[16] = {}, cap_d_values[16] = {};
 
-    // Per-device persistent pinned host staging buffers (grow-only).
-    static void* h_pinned[16] = {};
-    static size_t cap_h_pinned[16] = {};
+    // Per-device persistent pinned host staging buffers (grow-only with 25% headroom, huge
+    // pages): segment sizes vary by a few percent, and each regrow is a synchronizing free.
+    static ThpPinned h_pinned[16];
 
     size_t index_bytes = index_count * sizeof(uint32_t);
     size_t offsets_bytes = offsets_count * sizeof(uint32_t);
@@ -231,14 +426,12 @@ const char* risc0_zkp_cuda_scatter_from_host(Fp* into,
     }
 
     // Grow pinned host staging buffer if needed.
-    if (total_bytes > cap_h_pinned[dev]) {
-      if (h_pinned[dev]) CUDA_OK(cudaFreeHost(h_pinned[dev]));
-      CUDA_OK(cudaHostAlloc(&h_pinned[dev], total_bytes, cudaHostAllocDefault));
-      cap_h_pinned[dev] = total_bytes;
+    if (total_bytes > h_pinned[dev].bytes) {
+      h_pinned[dev].alloc(total_bytes + total_bytes / 4);
     }
 
     // Copy to pinned staging buffer (fast CPU memcpy).
-    char* pin = (char*)h_pinned[dev];
+    char* pin = (char*)h_pinned[dev].ptr;
     memcpy(pin, h_index, index_bytes);
     memcpy(pin + index_bytes, h_offsets, offsets_bytes);
     memcpy(pin + index_bytes + offsets_bytes, h_values, values_bytes);
@@ -277,9 +470,8 @@ const char* risc0_zkp_cuda_scatter_bits_from_host(Fp* into,
     static uint32_t* d_bitdata[16] = {};
     static size_t cap_d_bitdata[16] = {};
 
-    // Per-device persistent pinned host staging buffer (grow-only).
-    static void* h_pinned_bits[16] = {};
-    static size_t cap_h_pinned_bits[16] = {};
+    // Per-device persistent pinned host staging buffer (grow-only, huge pages).
+    static ThpPinned h_pinned_bits[16];
 
     size_t data_bytes = (size_t)triplet_count * 3 * sizeof(uint32_t);
 
@@ -290,15 +482,13 @@ const char* risc0_zkp_cuda_scatter_bits_from_host(Fp* into,
     }
 
     // Grow pinned host staging buffer if needed.
-    if (data_bytes > cap_h_pinned_bits[dev]) {
-      if (h_pinned_bits[dev]) CUDA_OK(cudaFreeHost(h_pinned_bits[dev]));
-      CUDA_OK(cudaHostAlloc(&h_pinned_bits[dev], data_bytes, cudaHostAllocDefault));
-      cap_h_pinned_bits[dev] = data_bytes;
+    if (data_bytes > h_pinned_bits[dev].bytes) {
+      h_pinned_bits[dev].alloc(data_bytes + data_bytes / 4);
     }
 
     // Copy to pinned staging and do truly async H2D.
-    memcpy(h_pinned_bits[dev], h_data, data_bytes);
-    CUDA_OK(cudaMemcpyAsync(d_bitdata[dev], h_pinned_bits[dev], data_bytes,
+    memcpy(h_pinned_bits[dev].ptr, h_data, data_bytes);
+    CUDA_OK(cudaMemcpyAsync(d_bitdata[dev], h_pinned_bits[dev].ptr, data_bytes,
                             cudaMemcpyHostToDevice, stream));
 
     // Launch scatter_bits kernel on same stream.

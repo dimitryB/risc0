@@ -18,9 +18,11 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 
 static VERBOSE: LazyLock<bool> = LazyLock::new(|| std::env::var("RISC0_VERBOSE").is_ok());
 
-use super::{keccak::prove_keccak, ProverServer};
+use super::{
+    keccak::{prove_keccak, prove_keccak_with},
+    ProverServer,
+};
 use risc0_circuit_rv32im::prove::SegmentProver;
-use risc0_core::field::{baby_bear::BabyBearExtElem as ExtVal, Elem as _};
 
 thread_local! {
     // ManuallyDrop prevents TLS cleanup from dropping CUDA buffers after the CUDA
@@ -28,6 +30,43 @@ thread_local! {
     // GPU memory is reclaimed by CUDA context teardown regardless.
     static CACHED_SEGMENT_PROVER: std::mem::ManuallyDrop<RefCell<Option<Box<dyn SegmentProver>>>> =
         std::mem::ManuallyDrop::new(RefCell::new(None));
+}
+
+/// Completes, and discards, whatever segment the cached prover still has pending when dropped.
+struct DrainSegmentProverOnExit<'a>(&'a ProverImpl);
+
+impl Drop for DrainSegmentProverOnExit<'_> {
+    fn drop(&mut self) {
+        // An error here means nothing was pending, or the GPU work failed; the slot is idle either
+        // way. Not while panicking: the prover's RefCell may be the thing that is borrowed.
+        if !std::thread::panicking() {
+            let _ = self.0.with_segment_prover(|sp| sp.prove_end());
+        }
+    }
+}
+
+/// Drop this thread's cached segment prover and the device buffers it keeps between segments
+/// (see `release_cached_provers`). Only between sessions: the prover must be idle.
+#[cfg(any(feature = "rocm", feature = "intel"))]
+fn release_cached_segment_prover() {
+    CACHED_SEGMENT_PROVER.with(|cell| {
+        if let Ok(mut borrow) = cell.try_borrow_mut() {
+            *borrow = None;
+        }
+    });
+}
+
+/// Before the Groth16 wrap on ROCm and Intel, drop the provers cached between proofs (this
+/// thread's segment prover and recursion provers), then the HAL's pool. On an RX 9070 XT (16 GB,
+/// Windows) the wrap's ~7 GB proving key beside those long-lived buffers made the driver move
+/// ~2 GB of them into shared system memory, where they stayed: every later session ran ~2.5x
+/// slower. On an Arc B580 (12 GB, Windows) at po2=20 the next session's segments took 106 s
+/// instead of 28 (54-65 s with this alone; the rest was the HAL's pool, see `pool_max_bytes` in
+/// risc0-zkp's Intel HAL). Rebuilt by the next session, in device memory.
+#[cfg(any(feature = "rocm", feature = "intel"))]
+pub(crate) fn release_cached_provers() {
+    release_cached_segment_prover();
+    risc0_circuit_recursion::prove::release_cached_provers();
 }
 
 fn with_segment_prover<R>(f: impl FnOnce(&dyn SegmentProver) -> Result<R>) -> Result<R> {
@@ -66,6 +105,39 @@ use crate::{
     SuccinctReceiptVerifierParameters, UnionClaim, Unknown, VerifierContext, WorkClaim,
 };
 
+/// CUDA context creation and module loading (`cuda_warmup`), started by [ProverImpl::new] so it
+/// overlaps guest execution and taken by the first session that proves. Warmup only loads
+/// modules early, so a session that finds it taken (or done) simply skips it.
+#[cfg(feature = "cuda")]
+enum CudaWarmup {
+    NotStarted,
+    Running(std::thread::JoinHandle<()>),
+    Taken,
+}
+
+#[cfg(feature = "cuda")]
+static CUDA_WARMUP: std::sync::Mutex<CudaWarmup> = std::sync::Mutex::new(CudaWarmup::NotStarted);
+
+#[cfg(feature = "cuda")]
+fn spawn_cuda_warmup() -> std::thread::JoinHandle<()> {
+    std::thread::spawn(risc0_circuit_rv32im::prove::cuda_warmup)
+}
+
+/// The recursion kernels' module loading, started by a non-composite session.
+#[cfg(feature = "cuda")]
+static CUDA_REC_WARMUP: std::sync::Mutex<CudaWarmup> =
+    std::sync::Mutex::new(CudaWarmup::NotStarted);
+
+/// Wait for the recursion warmup, if one is running (it makes no GPU launches and takes no
+/// GPU lock, so this cannot deadlock against a session).
+#[cfg(feature = "cuda")]
+fn join_cuda_rec_warmup() {
+    let warmup = std::mem::replace(&mut *CUDA_REC_WARMUP.lock().unwrap(), CudaWarmup::Taken);
+    if let CudaWarmup::Running(handle) = warmup {
+        let _ = handle.join();
+    }
+}
+
 /// An implementation of a Prover that runs locally.
 pub struct ProverImpl {
     opts: ProverOpts,
@@ -84,6 +156,23 @@ impl ProverImpl {
         #[cfg(feature = "intel")]
         if std::env::var("RISC0_INTEL_EARLY_INIT").as_deref() != Ok("0") {
             risc0_zkp::hal::intel::start_background_init(vec![opts.max_segment_po2 as u32]);
+        }
+        #[cfg(feature = "cuda")]
+        {
+            let mut warmup = CUDA_WARMUP.lock().unwrap();
+            if matches!(*warmup, CudaWarmup::NotStarted) {
+                *warmup = CudaWarmup::Running(spawn_cuda_warmup());
+            }
+        }
+        // ROCm: pick the per-arch HW queue count on this thread, before
+        // the warmup threads make the first HIP call.
+        #[cfg(feature = "rocm")]
+        risc0_zkp::hal::hip::auto_configure_hw_queues();
+        // Parse the Groth16 witness graph (and build its parallel schedule) while the guest
+        // executes instead of beside the STARK.
+        #[cfg(feature = "cuda")]
+        if opts.receipt_kind == ReceiptKind::Groth16 {
+            risc0_groth16::prove::preload_graph_background();
         }
         Self {
             opts,
@@ -233,7 +322,7 @@ impl ProverImpl {
                     segment.po2(),
                     max_po2
                 );
-                let rand_z = ExtVal::random(&mut rand::rng());
+                let rand_z = risc0_circuit_rv32im::prove::preflight_rand_z();
                 let preflight =
                     risc0_circuit_rv32im::prove::PreflightResults::new(&segment.inner, rand_z)?;
                 let po2 = preflight.po2();
@@ -547,12 +636,28 @@ impl ProverImpl {
             return self.prove_session_parallel_stark(ctx, session);
         }
 
-        // Trigger CUDA module loading in background while first segment is prepared.
-        // With primary context, this is a one-time cost amortized across all segments.
+        // CUDA module loading, joined before the first segment: the thread ProverImpl::new
+        // started, or a new one if none was (a one-time cost per process).
         #[cfg(feature = "cuda")]
-        let mut warmup_handle = Some(std::thread::spawn(|| {
-            risc0_circuit_rv32im::prove::cuda_warmup();
-        }));
+        let mut warmup_handle = {
+            let mut warmup = CUDA_WARMUP.lock().unwrap();
+            match std::mem::replace(&mut *warmup, CudaWarmup::Taken) {
+                CudaWarmup::Running(handle) => Some(handle),
+                CudaWarmup::NotStarted => Some(spawn_cuda_warmup()),
+                CudaWarmup::Taken => None,
+            }
+        };
+        // Recursion kernels load on their own thread, once per process, off the composite's
+        // path; the first lift joins it.
+        #[cfg(feature = "cuda")]
+        if self.opts.receipt_kind != ReceiptKind::Composite {
+            let mut warmup = CUDA_REC_WARMUP.lock().unwrap();
+            if matches!(*warmup, CudaWarmup::NotStarted) {
+                *warmup = CudaWarmup::Running(std::thread::spawn(
+                    risc0_circuit_recursion::prove::cuda_warmup,
+                ));
+            }
+        }
         #[cfg(feature = "rocm")]
         let mut warmup_handle = Some(std::thread::spawn(|| {
             risc0_circuit_rv32im::prove::rocm_warmup();
@@ -560,6 +665,12 @@ impl ProverImpl {
         #[cfg(not(any(feature = "cuda", feature = "rocm")))]
         let mut warmup_handle: Option<std::thread::JoinHandle<()>> = None;
 
+        // Load the Groth16 proving key while the STARK proves (the loader starts once segment
+        // 0's prove_begin returns, see `prestart_key_go`).
+        #[cfg(feature = "cuda")]
+        if self.opts.receipt_kind == ReceiptKind::Groth16 {
+            risc0_groth16::prove::prestart_key();
+        }
         // Preload circom graph on background thread so the ~728ms file read + parse
         // overlaps with segment proving and recursion.  Only needed for Groth16.
         #[cfg(any(feature = "cuda", feature = "rocm", feature = "intel"))]
@@ -604,7 +715,55 @@ impl ProverImpl {
             .as_ref()
             .ok_or_else(|| anyhow!("segment receipt verifier parameters missing from context"))?
             .digest();
-        let mut pending_receipt: Option<std::thread::JoinHandle<Result<SegmentReceipt>>> = None;
+        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        type LiftPrepOpt = Option<rec_pipe::Prep>;
+        #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+        type LiftPrepOpt = Option<()>;
+        let mut pending_receipt: Option<
+            std::thread::JoinHandle<Result<(SegmentReceipt, LiftPrepOpt)>>,
+        > = None;
+        // Lift/join during segment proving (see rec_pipe). On ROCm only when RISC0_CUDA_REC_PIPE=1
+        // asks for it, and not with a recursion device (the multi-GPU recursion worker below lifts
+        // and joins instead). There a segment proof finalizes inline (prove_begin returns with
+        // the GPU done), so lifting between segments overlaps no GPU work: it saved ~0.1 s of
+        // 20 s on fib 1M on an RX 7900 XTX and nothing on general-compute, and on a 16 GB RX 9070
+        // XT with the Groth16 prover resident (a succinct proof after a Groth16 wrap) it made
+        // every segment ~40 ms slower (presumably the buffer pool, whose segment and recursion
+        // buffers no longer fit side by side; see release_pool_unless_fits).
+        #[cfg(feature = "rocm")]
+        let rec_pipe_ok = risc0_zkp::hal::hip::recursion_device().is_none()
+            && std::env::var("RISC0_CUDA_REC_PIPE").as_deref() == Ok("1");
+        #[cfg(all(feature = "cuda", not(feature = "rocm")))]
+        let rec_pipe_ok = true;
+        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        let mut rec_pipe: Option<rec_pipe::RecPipe> = {
+            if rec_pipe::enabled()
+                && rec_pipe_ok
+                && self.opts.receipt_kind != ReceiptKind::Composite
+                && session.povw_job_id.is_none()
+                && session.assumptions.is_empty()
+                && session.pending_keccaks.is_empty()
+            {
+                let recursion_opts = if self.opts.max_segment_po2 > crate::receipt::DEFAULT_MAX_PO2
+                {
+                    ProverOpts::from_max_po2(self.opts.max_segment_po2)
+                        .with_receipt_kind(ReceiptKind::Succinct)
+                } else {
+                    ProverOpts::succinct()
+                };
+                Some(rec_pipe::RecPipe::new(recursion_opts))
+            } else {
+                None
+            }
+        };
+        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        let lift_opts: Option<ProverOpts> = rec_pipe.as_ref().map(|p| p.opts());
+        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        let early_seal = rec_pipe.is_some();
+        #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+        let early_seal = false;
+        #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+        let lift_opts: Option<ProverOpts> = None;
         // Metadata from the previous iteration, paired with the seal returned by prove_begin.
         let mut prev_seal_meta: Option<(u32, u32, Option<Output>, String)> = None;
 
@@ -709,6 +868,12 @@ impl ProverImpl {
             );
         }
 
+        // A session that leaves the pipeline early (an invalid segment, an error) leaves its last
+        // segment's finalize pending in the CACHED prover, and the next session's first
+        // prove_begin would hand that stale seal back as its own previous segment's. Complete it
+        // on the way out, so the next session starts with the prover idle.
+        let pipeline_guard = DrainSegmentProverOnExit(self);
+
         for (seg_idx, segment_ref) in session.segments.iter().enumerate() {
             let t_seg = std::time::Instant::now();
 
@@ -720,6 +885,67 @@ impl ProverImpl {
             } else {
                 // First segment: compute synchronously.
                 let segment = segment_ref.resolve()?;
+                #[cfg(any(feature = "cuda", feature = "rocm"))]
+                let results = if rec_pipe.is_some() {
+                    // Commit the recursion ctrl groups on the idle GPU while the CPU runs the
+                    // first segment's preflight (for the recursion pipe, which lifts during the
+                    // session).
+                    let po2 = segment.po2();
+                    let g16 = self.opts.receipt_kind == ReceiptKind::Groth16;
+                    let ropts = if self.opts.max_segment_po2 > crate::receipt::DEFAULT_MAX_PO2 {
+                        ProverOpts::from_max_po2(self.opts.max_segment_po2)
+                            .with_receipt_kind(ReceiptKind::Succinct)
+                    } else {
+                        ProverOpts::succinct()
+                    };
+                    let seg_ref = &segment;
+                    let max_po2 = self.opts.max_segment_po2;
+                    std::thread::scope(|sc| -> Result<PreflightResults> {
+                        // Not `segment_preflight`: on another thread it would create a segment
+                        // prover, whose HAL init waits for the GPU lock this session holds.
+                        let h = sc.spawn(move || -> Result<PreflightResults> {
+                            ensure!(
+                                seg_ref.po2() <= max_po2,
+                                "segment po2 exceeds max on ProverOpts: {} > {}",
+                                seg_ref.po2(),
+                                max_po2
+                            );
+                            let rand_z = risc0_circuit_rv32im::prove::preflight_rand_z();
+                            let inner = risc0_circuit_rv32im::prove::PreflightResults::new(
+                                &seg_ref.inner,
+                                rand_z,
+                            )?;
+                            Ok(PreflightResults {
+                                inner,
+                                terminate_state: seg_ref.inner.claim.terminate_state,
+                                output: seg_ref.output.clone(),
+                                segment_index: seg_ref.index,
+                            })
+                        });
+                        let t = std::time::Instant::now();
+                        if let Some(handle) = warmup_handle.take() {
+                            let _ = handle.join();
+                        }
+                        #[cfg(feature = "cuda")]
+                        join_cuda_rec_warmup();
+                        let tw = t.elapsed().as_secs_f64() * 1e3;
+                        let r = crate::host::recursion::prove::Prover::prewarm(&[po2], &ropts, g16);
+                        tracing::debug!(
+                            "recursion prewarm: warmups={tw:.1}ms prewarm done at {:.1}ms ok={}",
+                            t.elapsed().as_secs_f64() * 1e3,
+                            r.is_ok()
+                        );
+                        let res = h.join().map_err(|_| anyhow!("preflight thread panicked"))?;
+                        tracing::debug!(
+                            "recursion prewarm: segment 0 preflight joined at {:.1}ms",
+                            t.elapsed().as_secs_f64() * 1e3
+                        );
+                        res
+                    })?
+                } else {
+                    self.segment_preflight(&segment)?
+                };
+                #[cfg(not(any(feature = "cuda", feature = "rocm")))]
                 let results = self.segment_preflight(&segment)?;
                 (segment, results)
             };
@@ -746,7 +972,7 @@ impl ProverImpl {
                         next_segment.po2(),
                         max_po2
                     );
-                    let rand_z = ExtVal::random(&mut rand::rng());
+                    let rand_z = risc0_circuit_rv32im::prove::preflight_rand_z();
                     let inner = risc0_circuit_rv32im::prove::PreflightResults::new(
                         &next_segment.inner,
                         rand_z,
@@ -767,6 +993,8 @@ impl ProverImpl {
             let output = results.output;
             let hashfn = self.opts.hashfn.clone();
 
+            release_pool_on_po2_growth(po2);
+
             // GPU prove_begin: main phase (overlapping with prev eval_check) +
             // complete prev deferred finalize + launch eval_check for this segment.
             // Returns the PREVIOUS segment's seal (None on first call).
@@ -777,19 +1005,50 @@ impl ProverImpl {
             #[cfg(feature = "metal-hybrid")]
             self.record_metal_segment(segment_index, po2, metal_before)?;
             let prove_begin_ms = t_psc.elapsed().as_secs_f64() * 1000.0;
+            // Segment 0's GPU work (incl. its eval_check) is queued: release the Groth16 key
+            // loader, so its pinned uploads and cold allocations do not compete with
+            // segment 0's.
+            #[cfg(feature = "cuda")]
+            if self.opts.receipt_kind == ReceiptKind::Groth16 {
+                risc0_groth16::prove::prestart_key_go();
+            }
+            // Early seal (with the recursion pipe): prove_begin finalizes this segment inline and
+            // only holds its seal back; take it now (prove_end just returns it), so this
+            // segment's receipt and lift preparation start one iteration earlier.
+            let mut cur_meta = Some((po2, segment_index, output, hashfn));
+            let prev_seal = if early_seal {
+                // prove_begin returns no seal in this mode: it finalized the previous segment
+                // when that one began.
+                ensure!(
+                    prev_seal.is_none(),
+                    "segment pipeline: unexpected seal from prove_begin with the early seal"
+                );
+                prev_seal_meta = cur_meta.take();
+                Some(self.with_segment_prover(|sp| sp.prove_end())?)
+            } else {
+                prev_seal
+            };
 
             // If we got a previous segment's seal, process it.
             if let Some(seal) = prev_seal {
                 // Collect the background receipt from the segment before that.
                 if let Some(handle) = pending_receipt.take() {
-                    let receipt = handle
+                    let (receipt, _prep) = handle
                         .join()
                         .map_err(|_| anyhow!("receipt thread panicked"))??;
                     // Multi-GPU: send receipt to recursion worker for parallel lift+join
                     if let Some(ref tx) = recursion_tx {
                         let _ = tx.send(receipt.clone());
                     }
+                    #[cfg(any(feature = "cuda", feature = "rocm"))]
+                    if let (Some(p), Some(prep)) = (rec_pipe.as_mut(), _prep) {
+                        p.add(segments.len(), prep, Some(receipt.claim.clone()));
+                    }
                     segments.push(receipt);
+                    #[cfg(any(feature = "cuda", feature = "rocm"))]
+                    if let Some(p) = rec_pipe.as_mut() {
+                        p.poll()?;
+                    }
                 }
 
                 // Start background receipt for the PREVIOUS segment.
@@ -799,6 +1058,7 @@ impl ProverImpl {
                 let params = verify_params.clone();
                 let vp_digest = seg_verifier_params_digest;
                 let skip_verify_copy = skip_verify;
+                let lift_opts_copy = lift_opts.clone();
                 pending_receipt = Some(std::thread::spawn(move || {
                     let mut claim = ReceiptClaim::decode_from_seal_v2(&seal, Some(prev_po2))?;
                     claim.output = prev_output.into();
@@ -809,20 +1069,30 @@ impl ProverImpl {
                         claim,
                         verifier_parameters: vp_digest,
                     };
+                    #[cfg(any(feature = "cuda", feature = "rocm"))]
+                    let prep =
+                        lift_opts_copy.map(|o| rec_pipe::spawn_lift_prep(receipt.clone(), o));
+                    #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+                    let prep = {
+                        let _ = lift_opts_copy;
+                        None
+                    };
                     if !skip_verify_copy {
                         receipt
                             .verify_integrity_with_context(&VerifierContext {
                                 segment_verifier_parameters: params,
                                 ..VerifierContext::empty()
                             })
-                            .context("verify segment")?;
+                            .with_context(|| format!("verify segment {prev_seg_idx}"))?;
                     }
-                    Ok(receipt)
+                    Ok((receipt, prep))
                 }));
             }
 
             // Store current segment's metadata for next iteration.
-            prev_seal_meta = Some((po2, segment_index, output, hashfn));
+            if let Some(m) = cur_meta {
+                prev_seal_meta = Some(m);
+            }
 
             let t_prove = t_seg.elapsed() - t_preflight;
             let t_total = t_seg.elapsed();
@@ -841,45 +1111,102 @@ impl ProverImpl {
             }
         }
 
-        // Complete the last segment's deferred finalize.
-        let last_seal = self.with_segment_prover(|sp| sp.prove_end())?;
+        // The loop is done. The last segment's deferred finalize was completed by the early seals,
+        // or is completed just below, which empties the prover whether or not it succeeds: there is
+        // nothing left for the guard to drain.
+        std::mem::forget(pipeline_guard);
 
-        // Collect the second-to-last receipt (if any).
-        if let Some(handle) = pending_receipt.take() {
-            let receipt = handle
-                .join()
-                .map_err(|_| anyhow!("receipt thread panicked"))??;
-            // Multi-GPU: send to recursion worker
-            if let Some(ref tx) = recursion_tx {
-                let _ = tx.send(receipt.clone());
+        if early_seal {
+            // Every seal was taken in the loop: collect the last receipt (verified on its
+            // thread); its lift's claim is the merged one, set when the pipe drains.
+            if let Some(handle) = pending_receipt.take() {
+                let (receipt, _prep) = handle
+                    .join()
+                    .map_err(|_| anyhow!("receipt thread panicked"))??;
+                #[cfg(any(feature = "cuda", feature = "rocm"))]
+                if let (Some(p), Some(prep)) = (rec_pipe.as_mut(), _prep) {
+                    p.add(segments.len(), prep, None);
+                    p.poll()?;
+                }
+                segments.push(receipt);
             }
-            segments.push(receipt);
-        }
+        } else {
+            // Complete the last segment's deferred finalize.
+            let last_seal = self.with_segment_prover(|sp| sp.prove_end())?;
+            let mut last_seal = Some(last_seal);
 
-        // Process the last segment's seal.
-        {
-            let (last_po2, last_seg_idx, last_output, last_hashfn) = prev_seal_meta
-                .take()
-                .ok_or_else(|| anyhow!("segment pipeline: seal without metadata"))?;
-            let mut claim = ReceiptClaim::decode_from_seal_v2(&last_seal, Some(last_po2))?;
-            claim.output = last_output.into();
-            let receipt = SegmentReceipt {
-                seal: last_seal,
-                index: last_seg_idx,
-                hashfn: last_hashfn,
-                claim,
-                verifier_parameters: seg_verifier_params_digest,
-            };
-            if !skip_verify {
-                receipt
-                    .verify_integrity_with_context(&VerifierContext {
-                        segment_verifier_parameters: verify_params.clone(),
-                        ..VerifierContext::empty()
-                    })
-                    .context("verify segment")?;
+            // Parallel tail verify (without the recursion pipe, whose early seal verifies every
+            // receipt on its own thread; RISC0_TAIL_VERIFY=0 disables): build the last segment's
+            // receipt and verify it on its own thread while the second-to-last one (started after
+            // the previous prove_begin) finishes verifying, so the two CPU verifications overlap
+            // instead of running back to back.
+            let mut par_last: Option<std::thread::JoinHandle<Result<SegmentReceipt>>> = None;
+            if !skip_verify && std::env::var("RISC0_TAIL_VERIFY").as_deref() != Ok("0") {
+                let (last_po2, last_seg_idx, last_output, last_hashfn) = prev_seal_meta
+                    .take()
+                    .ok_or_else(|| anyhow!("segment pipeline: seal without metadata"))?;
+                let seal = last_seal.take().unwrap();
+                let mut claim = ReceiptClaim::decode_from_seal_v2(&seal, Some(last_po2))?;
+                claim.output = last_output.into();
+                let receipt = SegmentReceipt {
+                    seal,
+                    index: last_seg_idx,
+                    hashfn: last_hashfn,
+                    claim,
+                    verifier_parameters: seg_verifier_params_digest,
+                };
+                let params = verify_params.clone();
+                par_last = Some(std::thread::spawn(move || -> Result<SegmentReceipt> {
+                    receipt
+                        .verify_integrity_with_context(&VerifierContext {
+                            segment_verifier_parameters: params,
+                            ..VerifierContext::empty()
+                        })
+                        .with_context(|| format!("verify segment (last) {}", receipt.index))?;
+                    Ok(receipt)
+                }));
             }
-            segments.push(receipt);
-        }
+
+            // Collect the second-to-last receipt (if any).
+            if let Some(handle) = pending_receipt.take() {
+                let (receipt, _prep) = handle
+                    .join()
+                    .map_err(|_| anyhow!("receipt thread panicked"))??;
+                // Multi-GPU: send to recursion worker
+                if let Some(ref tx) = recursion_tx {
+                    let _ = tx.send(receipt.clone());
+                }
+                segments.push(receipt);
+            }
+
+            // Process the last segment's seal.
+            if let Some(h) = par_last.take() {
+                segments.push(h.join().map_err(|_| anyhow!("receipt thread panicked"))??);
+            } else {
+                let last_seal = last_seal.take().unwrap();
+                let (last_po2, last_seg_idx, last_output, last_hashfn) = prev_seal_meta
+                    .take()
+                    .ok_or_else(|| anyhow!("segment pipeline: seal without metadata"))?;
+                let mut claim = ReceiptClaim::decode_from_seal_v2(&last_seal, Some(last_po2))?;
+                claim.output = last_output.into();
+                let receipt = SegmentReceipt {
+                    seal: last_seal,
+                    index: last_seg_idx,
+                    hashfn: last_hashfn,
+                    claim,
+                    verifier_parameters: seg_verifier_params_digest,
+                };
+                if !skip_verify {
+                    receipt
+                        .verify_integrity_with_context(&VerifierContext {
+                            segment_verifier_parameters: verify_params.clone(),
+                            ..VerifierContext::empty()
+                        })
+                        .with_context(|| format!("verify segment (last) {}", receipt.index))?;
+                }
+                segments.push(receipt);
+            }
+        } // !early_seal
 
         let (assumptions, session_assumption_receipts): (Vec<_>, Vec<_>) =
             session.assumptions.iter().cloned().unzip();
@@ -928,15 +1255,82 @@ impl ProverImpl {
             super::release_hal_buffers();
         }
 
-        for proof_request in session.pending_keccaks.iter() {
-            let receipt = prove_keccak(proof_request).context("prove keccak")?;
-            receipt.verify_integrity_with_context(&keccak_ctx)?;
-            tracing::debug!("adding keccak assumption: {}", receipt.claim.digest());
-            keccak_receipts.insert(receipt)?;
-        }
+        let t_keccaks = std::time::Instant::now();
+        std::thread::scope(|scope| -> Result<()> {
+            // On Intel and AMD GPUs a keccak proof's witness is made on the CPU, about half of
+            // the proof's time: make each on a thread, a proof ahead of the GPU, so the two
+            // overlap. (On CUDA the GPU makes it.) Returning early drops `witnesses`, which ends
+            // the thread.
+            let witnesses = (cfg!(any(feature = "intel", feature = "rocm"))
+                && session.pending_keccaks.len() > 1)
+                .then(|| {
+                    let (tx, rx) = mpsc::sync_channel(1);
+                    let requests = &session.pending_keccaks;
+                    scope.spawn(move || {
+                        for request in requests {
+                            let witness = risc0_circuit_keccak::prove::host_witness(
+                                &request.input,
+                                request.po2,
+                            );
+                            if tx.send(witness).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    rx
+                });
+            for (i, proof_request) in session.pending_keccaks.iter().enumerate() {
+                let t_keccak = std::time::Instant::now();
+                let witness = match &witnesses {
+                    Some(rx) => Some(
+                        rx.recv()
+                            .map_err(|_| anyhow!("the keccak witness thread ended early"))?
+                            .context("keccak witness")?,
+                    ),
+                    None => None,
+                };
+                let wait_ms = t_keccak.elapsed().as_secs_f64() * 1000.0;
+                let receipt = prove_keccak_with(proof_request, witness).context("prove keccak")?;
+                let prove_ms = t_keccak.elapsed().as_secs_f64() * 1000.0;
+                receipt.verify_integrity_with_context(&keccak_ctx)?;
+                tracing::debug!("adding keccak assumption: {}", receipt.claim.digest());
+                let t_insert = std::time::Instant::now();
+                keccak_receipts.insert(receipt)?;
+                if *VERBOSE {
+                    eprintln!(
+                        "[keccak] {i}: po2={} witness wait={wait_ms:.1}ms \
+                         prove+lift={prove_ms:.1}ms insert={:.1}ms total={:.1}ms",
+                        proof_request.po2,
+                        t_insert.elapsed().as_secs_f64() * 1000.0,
+                        t_keccak.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
+            }
+            Ok(())
+        })?;
 
         // NOTE: Calling keccak_receipts.root() proves the union tree.
-        if let Ok(root_receipt) = keccak_receipts.root() {
+        let t_root = std::time::Instant::now();
+        let keccak_root = keccak_receipts.root();
+        if *VERBOSE && !session.pending_keccaks.is_empty() {
+            eprintln!(
+                "[keccak] {} proofs: root={:.1}ms total={:.1}ms",
+                session.pending_keccaks.len(),
+                t_root.elapsed().as_secs_f64() * 1000.0,
+                t_keccaks.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        // On ROCm, start the segments' lifts and joins from fresh device memory: the keccak
+        // proofs peak near a 16 GB card's capacity, and on Windows buffers the HAL pooled
+        // through that peak could be in shared system memory. With keccak at po2 18 on an RX
+        // 9070 XT the lifts and joins after it ran ~1.6x slower (recursion data commits 28 ->
+        // 93 ms). The keccak lift programs' cached ctrl groups aren't needed after this either.
+        #[cfg(feature = "rocm")]
+        if !session.pending_keccaks.is_empty() {
+            release_cached_provers();
+            super::release_hal_buffers();
+        }
+        if let Ok(root_receipt) = keccak_root {
             let assumption = Assumption {
                 claim: root_receipt.claim.digest(),
                 control_root: root_receipt.control_root()?,
@@ -1011,6 +1405,19 @@ impl ProverImpl {
                     let unwrapped = self.unwrap_povw(&work_receipt)?;
                     (unwrapped, Some(work_receipt), None)
                 }
+                #[cfg(any(feature = "cuda", feature = "rocm"))]
+                false if rec_pipe.is_some() => {
+                    let n = composite_receipt.segments.len();
+                    let last = composite_receipt.segments.last().unwrap().claim.clone();
+                    let t = std::time::Instant::now();
+                    let p = rec_pipe.take().unwrap();
+                    let r = p.drain(last, n)?;
+                    tracing::debug!(
+                        "composite_to_succinct: recursion pipe tail {:.1}ms",
+                        t.elapsed().as_secs_f64() * 1e3
+                    );
+                    (r, None, None)
+                }
                 false => (self.composite_to_succinct(&composite_receipt)?, None, None),
             }
         };
@@ -1020,7 +1427,7 @@ impl ProverImpl {
         // inputs in-circuit, so verifying the final receipt covers them. Above the
         // default po2 the recursion allows the wider set of control IDs, and so
         // must the verifier.
-        if !skip_verify {
+        let verify_succinct = |succinct_receipt: &SuccinctReceipt<ReceiptClaim>| -> Result<()> {
             let max_po2 = self.opts.max_segment_po2;
             let wide_ctx;
             let succinct_ctx = if max_po2 > crate::receipt::DEFAULT_MAX_PO2 {
@@ -1036,7 +1443,18 @@ impl ProverImpl {
             };
             succinct_receipt
                 .verify_integrity_with_context(succinct_ctx)
-                .context("verify succinct")?;
+                .context("verify succinct")
+        };
+        // For Groth16, verify the succinct receipt on a scoped thread alongside
+        // succinct_to_groth16 (CPU work beside identity_p254 and the wrap); joined, and its error
+        // returned, before the Groth16 receipt is. RISC0_CUDA_G16_TAIL=0 (the Groth16 tail
+        // switch, see risc0-groth16) verifies first.
+        let par_verify = !skip_verify
+            && self.opts.receipt_kind == ReceiptKind::Groth16
+            && pre_ident.is_none()
+            && std::env::var("RISC0_CUDA_G16_TAIL").as_deref() != Ok("0");
+        if !skip_verify && !par_verify {
+            verify_succinct(&succinct_receipt)?;
         }
 
         if self.opts.receipt_kind == ReceiptKind::Succinct {
@@ -1053,15 +1471,17 @@ impl ProverImpl {
 
         let groth16_receipt = if let Some(ident_receipt) = pre_ident {
             // identity_p254 already computed by recursion worker (overlapped with STARK).
-            use risc0_groth16::prove::shrink_wrap;
+            use risc0_groth16::prove::shrink_wrap_with;
             if let Err(e) = risc0_groth16::prove::prestart_prover() {
                 eprintln!("[groth16] prover prestart failed (non-fatal): {e}");
             }
             let t0 = std::time::Instant::now();
             let seal_bytes = ident_receipt.get_seal_bytes();
             // See `release_hal_buffers`: the wrap cannot reclaim what the STARK HAL is caching.
-            super::release_hal_buffers();
-            let seal = shrink_wrap(&seal_bytes)?.to_vec();
+            // Released while the wrap computes its witness on another thread.
+            #[cfg(any(feature = "rocm", feature = "intel"))]
+            release_cached_provers();
+            let seal = shrink_wrap_with(&seal_bytes, super::release_hal_buffers)?.to_vec();
             super::release_hal_buffers();
             let wrap_ms = t0.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
@@ -1075,6 +1495,17 @@ impl ProverImpl {
             };
             super::check_groth16_receipt(&groth16_receipt)?;
             groth16_receipt
+        } else if par_verify {
+            let succinct_receipt = &succinct_receipt;
+            let verify_succinct = &verify_succinct;
+            std::thread::scope(|sc| -> Result<_> {
+                let verify = sc.spawn(move || verify_succinct(succinct_receipt));
+                let groth16 = self.succinct_to_groth16(succinct_receipt);
+                verify
+                    .join()
+                    .map_err(|_| anyhow!("succinct verify thread panicked"))??;
+                groth16
+            })?
         } else {
             // succinct_to_groth16 verifies the receipt before returning it.
             self.succinct_to_groth16(&succinct_receipt)?
@@ -1115,19 +1546,28 @@ impl ProverServer for ProverImpl {
     ) -> Result<ProveInfo> {
         #[allow(unused_mut)]
         let mut env = env;
-        // Intel: succinct/groth16 receipts are faster with po2=21 segments
-        // (half the lifts and joins; composite proving costs ~8% more per
-        // cycle at po2=21, a net -0.4 s for a 12M-cycle guest). Only when the
-        // caller did not choose a segment size; RISC0_INTEL_SUCCINCT_SEGMENT_PO2
-        // overrides (e.g. 20 keeps the executor default).
-        #[cfg(feature = "intel")]
+        // Intel and CUDA: succinct/groth16 receipts are faster with po2=21 segments (half the
+        // lifts and joins; composite proving costs more per cycle at po2=21, but less than the
+        // recursion it saves). Only when the caller did not choose a segment size;
+        // RISC0_SUCCINCT_SEGMENT_PO2 (or RISC0_INTEL_SUCCINCT_SEGMENT_PO2) overrides, e.g. 20
+        // keeps the executor default. CUDA needs ~28 GB of device memory for po2=21. Intel keeps
+        // the executor default: on the 32 GB Arc Pro B70, po2=21 ran out of device memory in long
+        // sessions and after a Groth16 wrap in the same process (an Ethereum block, a STARK
+        // proof after the Groth16 prover cached its key), where po2=20 did not.
+        #[cfg(any(feature = "intel", feature = "cuda"))]
         if self.opts.receipt_kind != ReceiptKind::Composite && env.segment_limit_po2.is_none() {
-            let po2 = std::env::var("RISC0_INTEL_SUCCINCT_SEGMENT_PO2")
+            let po2 = std::env::var("RISC0_SUCCINCT_SEGMENT_PO2")
+                .or_else(|_| std::env::var("RISC0_INTEL_SUCCINCT_SEGMENT_PO2"))
                 .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(21)
-                .min(self.opts.max_segment_po2 as u32);
-            env.segment_limit_po2 = Some(po2);
+                .and_then(|v| v.parse::<u32>().ok());
+            #[cfg(feature = "cuda")]
+            let po2 = po2.or_else(|| {
+                let total = risc0_zkp::hal::cuda::device_total_memory().unwrap_or(0);
+                (total >= 30 << 30).then_some(21)
+            });
+            if let Some(po2) = po2 {
+                env.segment_limit_po2 = Some(po2.min(self.opts.max_segment_po2 as u32));
+            }
         }
         let session = ExecutorImpl::from_elf(env, elf)?.run()?;
         self.prove_session(ctx, &session)
@@ -1181,6 +1621,7 @@ impl ProverServer for ProverImpl {
         );
 
         let po2 = preflight_results.inner.po2();
+        release_pool_on_po2_growth(po2);
         let t_psc = std::time::Instant::now();
         #[cfg(feature = "metal-hybrid")]
         let metal_before = self.with_segment_prover(|sp| Ok(sp.metal_stats()))?;
@@ -1422,6 +1863,9 @@ impl ProverServer for ProverImpl {
             ProverOpts::succinct()
         };
 
+        #[cfg(feature = "cuda")]
+        join_cuda_rec_warmup();
+
         // Cross-segment pipelining: bg thread does CPU preflight of next lift
         // while main thread runs the GPU join of the previous one. Validated
         // ~3% E2E win at composite=42 segs.
@@ -1462,20 +1906,55 @@ impl ProverServer for ProverImpl {
                 make_succinct_receipt(prover, receipt, claim)
             };
             let t0 = std::time::Instant::now();
-            let mut acc = lift_with_opts(&segments[0], recursion_opts.clone())?;
-            let mut cur = finish_lift(spawn_lift_prep(1)?, 1)?;
-            if *VERBOSE {
-                eprintln!(
-                    "[composite_to_succinct] reorder: lift0+lift1={:.1}ms",
-                    t0.elapsed().as_secs_f64() * 1000.0
-                );
-            }
+            // Prepare lift0, lift1 (and lift2) concurrently up front, instead of lift0's
+            // preflight on the GPU thread and lift1's only after lift0 (~40 ms of idle GPU).
+            let h0 = spawn_lift_prep(0)?;
+            let h1 = spawn_lift_prep(1)?;
             let mut pending: Option<std::thread::JoinHandle<Result<RecursionProverJob>>> =
                 if num_segments > 2 {
                     Some(spawn_lift_prep(2)?)
                 } else {
                     None
                 };
+            // ROCm: the programs' first use, off the GPU's critical path. A background thread
+            // loads the join program and the other segment po2s' lift programs and builds their
+            // host ctrl (else ~15 ms of program load on this thread before the first join and
+            // before the last lift, and ~15 ms of host ctrl in each one's first witgen), and this
+            // thread uploads and commits lift0's program's ctrl while the first preparations run
+            // (the GPU idles until lift0's is done). RISC0_REC_WARM=0: off.
+            #[cfg(feature = "rocm")]
+            if std::env::var("RISC0_REC_WARM").as_deref() != Ok("0") {
+                let mut po2s: Vec<usize> = Vec::new();
+                for seg in segments.iter() {
+                    if let Ok(p) = RecursionProverJob::lift_po2(seg) {
+                        if !po2s.contains(&p) {
+                            po2s.push(p);
+                        }
+                    }
+                }
+                let rest: Vec<usize> = po2s.iter().skip(1).copied().collect();
+                let opts = recursion_opts.clone();
+                let _ = std::thread::Builder::new()
+                    .name("rec-preload".into())
+                    .spawn(move || {
+                        if let Err(e) = RecursionProverJob::preload(&rest, &opts) {
+                            tracing::debug!("recursion preload: {e}");
+                        }
+                    });
+                if let Some(&p) = po2s.first() {
+                    if let Err(e) = RecursionProverJob::prewarm_lift(p, &recursion_opts) {
+                        tracing::debug!("recursion prewarm: {e}");
+                    }
+                }
+            }
+            let mut acc = finish_lift(h0, 0)?;
+            let mut cur = finish_lift(h1, 1)?;
+            if *VERBOSE {
+                eprintln!(
+                    "[composite_to_succinct] reorder: lift0+lift1={:.1}ms",
+                    t0.elapsed().as_secs_f64() * 1000.0
+                );
+            }
             for k in 1..num_segments {
                 let t_step = std::time::Instant::now();
                 // background: prepare join(acc, cur)
@@ -1582,7 +2061,7 @@ impl ProverServer for ProverImpl {
         }
 
         eprintln!(
-            "[composite_to_succinct] lift/join done: {:.1}s",
+            "[composite_to_succinct] lift/join done: {:.3}s",
             t_pipeline.elapsed().as_secs_f64()
         );
 
@@ -1640,4 +2119,375 @@ fn check_claims(
         );
     }
     Ok(())
+}
+
+/// The HAL's buffer pool keeps up to (total VRAM - 8 GB) of freed buffers, sized for the po2 it
+/// last proved. When a larger po2 follows in the same process, those cached buffers do not fit
+/// the new sizes and, with the new working set, exhausted the device for allocations made
+/// outside the pool (nttq's T2, eval_check's scratch): composite 20,21 in one process failed
+/// with "out of memory". Release the pool once per po2 increase (the calling thread's pool:
+/// segment proving runs on this thread).
+fn release_pool_on_po2_growth(po2: u32) {
+    #[cfg(feature = "cuda")]
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static MAX_PO2: AtomicU32 = AtomicU32::new(0);
+        let prev = MAX_PO2.fetch_max(po2, Ordering::SeqCst);
+        if prev != 0 && po2 > prev {
+            super::release_hal_buffers();
+        }
+    }
+    #[cfg(not(feature = "cuda"))]
+    let _ = po2;
+}
+
+/// Lift (and left-fold join) segment receipts on the main thread between segment proofs, with
+/// every preparation (preflight + host chains) on background threads. Each join's preparation
+/// starts as soon as its left input exists (streaming the right input in when its lift
+/// finishes), and ready joins run before lifts.
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+mod rec_pipe {
+    use super::*;
+    use crate::host::recursion::prove::{make_succinct_receipt, Prover as Job};
+    use risc0_circuit_recursion::prove::InputStream;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::thread::JoinHandle;
+    use std::time::Instant;
+
+    /// A recursion proof's preparation thread (preflight + host chains; CPU only). Joined when
+    /// dropped, so that on error paths no preparation outlives the proving call that started it.
+    pub(super) struct Prep(Option<JoinHandle<Result<(Job, f64)>>>);
+
+    impl Prep {
+        fn spawn(f: impl FnOnce() -> Result<(Job, f64)> + Send + 'static) -> Self {
+            Self(Some(std::thread::spawn(f)))
+        }
+
+        fn is_finished(&self) -> bool {
+            self.0.as_ref().is_none_or(|h| h.is_finished())
+        }
+
+        fn join(mut self) -> Result<(Job, f64)> {
+            let h = self
+                .0
+                .take()
+                .ok_or_else(|| anyhow!("recursion preparation already joined"))?;
+            h.join()
+                .map_err(|_| anyhow!("recursion preparation panicked"))?
+        }
+    }
+
+    impl Drop for Prep {
+        fn drop(&mut self) {
+            if let Some(h) = self.0.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    /// Closes a streaming join's input when dropped. The join's preparation thread blocks in
+    /// `InputStream::pull` until the right input is fed and the stream closed; if the pipe fails
+    /// before (or while) feeding it, closing makes the preparation fail and exit instead of
+    /// waiting forever. Closing an already closed stream is a no-op.
+    struct CloseOnDrop(Arc<InputStream>);
+
+    impl Drop for CloseOnDrop {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+
+    /// The interleaved recursion pipeline (this module, the early seal, the streaming joins and
+    /// the recursion ctrl prewarm during segment 0): on unless `RISC0_CUDA_REC_PIPE=0`.
+    pub(super) fn enabled() -> bool {
+        static ON: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var("RISC0_CUDA_REC_PIPE").as_deref() != Ok("0"));
+        *ON
+    }
+
+    /// When the only ready lift is the right input of the join after the pending (fed) one, wait
+    /// up to this long for that join's preparation, so the next join's left half can prepare
+    /// while the lift runs.
+    const JOIN_FIRST_MS: f64 = 15.0;
+
+    static T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+    fn now_ms() -> f64 {
+        T0.elapsed().as_secs_f64() * 1e3
+    }
+
+    pub(super) fn spawn_lift_prep(seal_receipt: SegmentReceipt, opts: ProverOpts) -> Prep {
+        let _ = *T0;
+        Prep::spawn(move || {
+            let t = Instant::now();
+            let mut p = Job::new_lift(&seal_receipt, opts)?;
+            p.prepare()?;
+            Ok((p, t.elapsed().as_secs_f64() * 1e3))
+        })
+    }
+
+    struct PendingJoin {
+        /// Streaming: the stream and the left receipt, until `b` is fed. Declared before `prep`
+        /// so that on drop the stream is closed before the preparation thread is joined.
+        feed: Option<(CloseOnDrop, SuccinctReceipt<ReceiptClaim>)>,
+        prep: Prep,
+        /// Joined claim, once `b` is known.
+        claim: Option<ReceiptClaim>,
+        a_claim: MaybePruned<ReceiptClaim>,
+        idx: usize,
+    }
+
+    pub(super) struct RecPipe {
+        opts: ProverOpts,
+        lift_preps: BTreeMap<usize, (Prep, Option<ReceiptClaim>)>,
+        lifted: BTreeMap<usize, SuccinctReceipt<ReceiptClaim>>,
+        acc: Option<SuccinctReceipt<ReceiptClaim>>,
+        next: usize,
+        join: Option<PendingJoin>,
+        last_claim: Option<ReceiptClaim>,
+        warmed: bool,
+        gpu_ms: f64,
+        hold_since: Option<Instant>,
+    }
+
+    impl RecPipe {
+        pub(super) fn new(opts: ProverOpts) -> Self {
+            let _ = *T0;
+            Self {
+                opts,
+                lift_preps: BTreeMap::new(),
+                lifted: BTreeMap::new(),
+                acc: None,
+                next: 0,
+                join: None,
+                last_claim: None,
+                warmed: false,
+                gpu_ms: 0.0,
+                hold_since: None,
+            }
+        }
+
+        pub(super) fn opts(&self) -> ProverOpts {
+            self.opts.clone()
+        }
+
+        pub(super) fn add(&mut self, idx: usize, prep: Prep, claim: Option<ReceiptClaim>) {
+            tracing::trace!("rec_pipe: lift prep {idx} spawned at {:.1}", now_ms());
+            self.lift_preps.insert(idx, (prep, claim));
+        }
+
+        fn warm(&mut self) {
+            if !self.warmed {
+                #[cfg(feature = "cuda")]
+                join_cuda_rec_warmup();
+                self.warmed = true;
+            }
+        }
+
+        /// Feed `b` to a streaming join whose right lift is done.
+        fn maybe_feed(&mut self) -> Result<()> {
+            let Some(j) = self.join.as_mut() else {
+                return Ok(());
+            };
+            if j.feed.is_none() {
+                return Ok(());
+            }
+            let Some(b) = self.lifted.remove(&j.idx) else {
+                return Ok(());
+            };
+            let (stream, a) = j.feed.take().unwrap();
+            Job::feed_join_b(&stream.0, &a, &b)?;
+            j.claim = Some(j.a_claim.join(&b.claim)?.value()?);
+            tracing::trace!("rec_pipe: join ->{} fed b at {:.1}", j.idx, now_ms());
+            Ok(())
+        }
+
+        fn maybe_start_join(&mut self) -> Result<()> {
+            if self.join.is_some() {
+                return self.maybe_feed();
+            }
+            if self.acc.is_none() && self.next == 0 {
+                if let Some(l0) = self.lifted.remove(&0) {
+                    self.acc = Some(l0);
+                    self.next = 1;
+                }
+            }
+            let Some(_) = self.acc.as_ref() else {
+                return Ok(());
+            };
+            let idx = self.next;
+            if self.lifted.contains_key(&idx) {
+                let a = self.acc.take().unwrap();
+                let b = self.lifted.remove(&idx).unwrap();
+                let claim = a.claim.join(&b.claim)?.value()?;
+                let opts = self.opts.clone();
+                let a_claim = a.claim.clone();
+                let h = Prep::spawn(move || {
+                    let t = Instant::now();
+                    let mut p = Job::new_join(&a, &b, opts)?;
+                    p.prepare()?;
+                    Ok((p, t.elapsed().as_secs_f64() * 1e3))
+                });
+                self.join = Some(PendingJoin {
+                    prep: h,
+                    claim: Some(claim),
+                    feed: None,
+                    a_claim,
+                    idx,
+                });
+                self.next += 1;
+                tracing::trace!(
+                    "rec_pipe: join ->{idx} prep start (full) at {:.1}",
+                    now_ms()
+                );
+            } else if self.lift_preps.contains_key(&idx) {
+                let a = self.acc.take().unwrap();
+                let a_claim = a.claim.clone();
+                let (job, stream) = Job::new_join_streaming(&a, self.opts.clone())?;
+                let stream = CloseOnDrop(stream);
+                let h = Prep::spawn(move || {
+                    let t = Instant::now();
+                    let mut p = job;
+                    p.prepare()?;
+                    Ok((p, t.elapsed().as_secs_f64() * 1e3))
+                });
+                self.join = Some(PendingJoin {
+                    prep: h,
+                    claim: None,
+                    feed: Some((stream, a)),
+                    a_claim,
+                    idx,
+                });
+                self.next += 1;
+                tracing::trace!(
+                    "rec_pipe: join ->{idx} prep start (stream) at {:.1}",
+                    now_ms()
+                );
+            }
+            Ok(())
+        }
+
+        /// Run one ready unit of GPU work; with `block`, wait for one if none is ready.
+        /// Returns false when nothing was run (and, with `block`, nothing remains).
+        fn step(&mut self, block: bool) -> Result<bool> {
+            self.maybe_start_join()?;
+            let join_ready = self
+                .join
+                .as_ref()
+                .is_some_and(|j| j.feed.is_none() && j.prep.is_finished());
+            if join_ready {
+                let j = self.join.take().unwrap();
+                let claim = j.claim.unwrap();
+                let (mut job, prep_ms) = j.prep.join()?;
+                self.warm();
+                let t = Instant::now();
+                let at = now_ms();
+                let receipt = job.run()?;
+                let decoded = ReceiptClaim::decode(&mut receipt.out_stream())?;
+                let merged = decoded.merge(&claim)?;
+                self.acc = Some(make_succinct_receipt(job, receipt, merged)?);
+                let run_ms = t.elapsed().as_secs_f64() * 1e3;
+                self.gpu_ms += run_ms;
+                tracing::debug!(
+                    "rec_pipe: join ->{} at {at:.1} prep={prep_ms:.1} run={run_ms:.1}",
+                    j.idx
+                );
+                return Ok(true);
+            }
+            let ready = self
+                .lift_preps
+                .iter()
+                .find(|(_, (h, c))| h.is_finished() && (c.is_some() || self.last_claim.is_some()))
+                .map(|(k, _)| *k);
+            // The only ready lift is the right input of the join after the pending (fed) one:
+            // wait up to JOIN_FIRST_MS for that join's preparation (see JOIN_FIRST_MS).
+            if let (Some(k), Some(j)) = (ready, self.join.as_ref()) {
+                if block && j.feed.is_none() && k == self.next {
+                    let since = *self.hold_since.get_or_insert_with(Instant::now);
+                    if since.elapsed().as_secs_f64() * 1e3 < JOIN_FIRST_MS {
+                        std::thread::sleep(std::time::Duration::from_micros(100));
+                        return Ok(true);
+                    }
+                }
+            }
+            self.hold_since = None;
+            if let Some(k) = ready {
+                let (h, claim) = self.lift_preps.remove(&k).unwrap();
+                let claim = match claim {
+                    Some(c) => c,
+                    None => self.last_claim.clone().unwrap(),
+                };
+                let (mut job, prep_ms) = h.join()?;
+                self.warm();
+                let t = Instant::now();
+                let at = now_ms();
+                let receipt = job.run()?;
+                let decoded = ReceiptClaim::decode(&mut receipt.out_stream())?;
+                let merged = decoded.merge(&claim)?;
+                self.lifted
+                    .insert(k, make_succinct_receipt(job, receipt, merged)?);
+                let run_ms = t.elapsed().as_secs_f64() * 1e3;
+                self.gpu_ms += run_ms;
+                tracing::debug!("rec_pipe: lift {k} at {at:.1} prep={prep_ms:.1} run={run_ms:.1}");
+                self.maybe_feed()?;
+                return Ok(true);
+            }
+            if !block {
+                return Ok(false);
+            }
+            if self.join.is_none() && self.lift_preps.is_empty() && self.lifted.is_empty() {
+                return Ok(false);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+            Ok(true)
+        }
+
+        /// Run all work whose preparation is done, without waiting.
+        pub(super) fn poll(&mut self) -> Result<()> {
+            let t = Instant::now();
+            let mut n = 0;
+            while self.step(false)? {
+                n += 1;
+            }
+            if n > 0 {
+                tracing::debug!(
+                    "rec_pipe: poll ran {n} proofs in {:.1}ms",
+                    t.elapsed().as_secs_f64() * 1e3
+                );
+            }
+            Ok(())
+        }
+
+        pub(super) fn drain(
+            mut self,
+            last_claim: ReceiptClaim,
+            num_segments: usize,
+        ) -> Result<SuccinctReceipt<ReceiptClaim>> {
+            let t = Instant::now();
+            self.last_claim = Some(last_claim);
+            while self.step(true)? {}
+            ensure!(
+                self.next == num_segments || (num_segments == 1 && self.acc.is_some()),
+                "recursion pipe: folded {} of {num_segments} segments",
+                self.next
+            );
+            tracing::debug!(
+                "rec_pipe: drain {:.1}ms (total recursion run {:.1}ms) end at {:.1}",
+                t.elapsed().as_secs_f64() * 1e3,
+                self.gpu_ms,
+                now_ms()
+            );
+            // ROCm: like composite_to_succinct's "lift/join done" line, for the benchmarks.
+            #[cfg(feature = "rocm")]
+            eprintln!(
+                "[rec_pipe] {num_segments} segments: tail {:.3}s, lift/join runs {:.3}s",
+                t.elapsed().as_secs_f64(),
+                self.gpu_ms / 1e3
+            );
+            self.acc
+                .take()
+                .ok_or_else(|| anyhow!("recursion pipe: no receipt"))
+        }
+    }
 }

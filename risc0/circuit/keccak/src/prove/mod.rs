@@ -22,8 +22,9 @@ pub mod zkr;
 
 use std::rc::Rc;
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use cfg_if::cfg_if;
+use rayon::prelude::*;
 use risc0_core::{field::Elem, scope};
 use risc0_zkp::{
     adapter::{CircuitInfo as _, PROOF_SYSTEM_INFO},
@@ -32,8 +33,11 @@ use risc0_zkp::{
 };
 
 use self::{
-    hal::{CircuitWitnessGenerator, MetaBuffer, StepMode},
-    preflight::PreflightTrace,
+    hal::{
+        cpu::{generate_witness_host, scatter_preflight_host, HostMetaBuffer},
+        CircuitWitnessGenerator, MetaBuffer, StepMode,
+    },
+    preflight::{ForwardPreflightOrder, PreflightTrace},
 };
 use crate::{
     zirgen::{
@@ -56,6 +60,12 @@ pub type Seal = Vec<u32>;
 pub trait KeccakProver {
     fn prove(&self, inputs: &[KeccakState], po2: usize) -> Result<Seal>;
 
+    /// Prove from a witness [host_witness] made, as [KeccakProver::prove] would from its inputs,
+    /// or `None` if this prover makes its witness itself (on the GPU).
+    fn prove_host_witness(&self, _witness: HostWitness) -> Option<Result<Seal>> {
+        None
+    }
+
     fn verify(&self, seal: &Seal) -> Result<()> {
         let hash_suite = Poseidon2HashSuite::new_suite();
 
@@ -71,12 +81,60 @@ pub trait KeccakProver {
     }
 }
 
+/// A keccak proof's witness, made on the CPU by [host_witness].
+pub struct HostWitness {
+    po2: usize,
+    global: Vec<Val>,
+    data: Vec<Val>,
+}
+
+/// Make the witness of a keccak proof on the CPU, apart from any prover. A prover whose witness is
+/// the CPU's anyway ([KeccakProver::prove_host_witness]) can then prove one keccak while the next
+/// one's witness is made: on an Intel GPU the witness is about half of a proof's time.
+pub fn host_witness(inputs: &[KeccakState], po2: usize) -> Result<HostWitness> {
+    scope!("host_witness");
+    let cycles: usize = 1 << po2;
+    let preflight = PreflightTrace::<ForwardPreflightOrder>::new(inputs, cycles);
+    let mut global = initial_global(po2);
+    let mut data: Vec<Val> = (0..cycles * REGCOUNT_DATA)
+        .into_par_iter()
+        .map(|_| Val::INVALID)
+        .collect();
+    scatter_preflight_host(&mut data, cycles, &preflight.scatter, &preflight.data);
+    generate_witness_host(
+        StepMode::Parallel,
+        &preflight,
+        HostMetaBuffer {
+            buf: &mut global,
+            rows: 1,
+            cols: REGCOUNT_GLOBAL,
+            checked_reads: true,
+        },
+        HostMetaBuffer {
+            buf: &mut data,
+            rows: cycles,
+            cols: REGCOUNT_DATA,
+            checked_reads: true,
+        },
+    )?;
+    Ok(HostWitness { po2, global, data })
+}
+
+/// The global buffer a proof's witness starts from.
+fn initial_global(po2: usize) -> Vec<Val> {
+    let mut global = vec![Val::INVALID; REGCOUNT_GLOBAL];
+    global[LAYOUT_GLOBAL.total_cycles._super.offset] = Elem::from_u64(1 << po2);
+    global
+}
+
 pub fn keccak_prover() -> Result<Box<dyn KeccakProver>> {
     cfg_if! {
         if #[cfg(feature = "cuda")] {
             self::hal::cuda::keccak_prover()
         } else if #[cfg(feature = "rocm")] {
             self::hal::hip::keccak_prover()
+        } else if #[cfg(feature = "intel")] {
+            self::hal::intel::keccak_prover()
         // } else if #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "ios"))] {
         //     self::metal::keccak_prover()
         } else {
@@ -105,16 +163,12 @@ where
         let cycles: usize = 1 << po2;
         let preflight = PreflightTrace::<C::PreferredPreflightOrder>::new(inputs, cycles);
 
-        let mut global = vec![Val::INVALID; REGCOUNT_GLOBAL];
-        global[LAYOUT_GLOBAL.total_cycles._super.offset] = Elem::from_u64(1 << po2);
-
         let global = MetaBuffer {
-            buf: self.hal.copy_from_elem("global", &global),
+            buf: self.hal.copy_from_elem("global", &initial_global(po2)),
             rows: 1,
             cols: REGCOUNT_GLOBAL,
             checked_reads: true,
         };
-        let code = MetaBuffer::new("code", self.hal.as_ref(), cycles, REGCOUNT_CODE, true);
         let data = scope!(
             "alloc(data)",
             MetaBuffer::new("data", self.hal.as_ref(), cycles, REGCOUNT_DATA, true)
@@ -125,6 +179,50 @@ where
 
         self.circuit_hal
             .generate_witness(StepMode::Parallel, &preflight, &global, &data)?;
+
+        self.prove_witness(po2, global, data)
+    }
+
+    fn prove_host_witness(&self, witness: HostWitness) -> Option<Result<Seal>> {
+        if !C::HOST_WITNESS {
+            return None;
+        }
+        Some((|| {
+            scope!("prove");
+            let HostWitness { po2, global, data } = witness;
+            let cycles: usize = 1 << po2;
+            ensure!(global.len() == REGCOUNT_GLOBAL && data.len() == cycles * REGCOUNT_DATA);
+            let global = MetaBuffer {
+                buf: self.hal.copy_from_elem("global", &global),
+                rows: 1,
+                cols: REGCOUNT_GLOBAL,
+                checked_reads: true,
+            };
+            let data = MetaBuffer {
+                buf: self.hal.copy_from_elem("data", &data),
+                rows: cycles,
+                cols: REGCOUNT_DATA,
+                checked_reads: true,
+            };
+            self.prove_witness(po2, global, data)
+        })())
+    }
+}
+
+impl<H, C> KeccakProverImpl<H, C>
+where
+    H: Hal<Field = CircuitField, Elem = Val, ExtElem = ExtVal> + 'static,
+    C: CircuitHal<H> + CircuitWitnessGenerator<H>,
+{
+    /// The proof, from its witness.
+    fn prove_witness(
+        &self,
+        po2: usize,
+        global: MetaBuffer<H>,
+        data: MetaBuffer<H>,
+    ) -> Result<Seal> {
+        let cycles: usize = 1 << po2;
+        let code = MetaBuffer::new("code", self.hal.as_ref(), cycles, REGCOUNT_CODE, true);
 
         // Zero out 'invalid' entries in data and output.
         scope!("zeroize", {

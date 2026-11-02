@@ -136,6 +136,10 @@ extern "C" {
     ) -> *const std::os::raw::c_char;
 
     pub fn risc0_circuit_rv32im_cuda_warmup() -> *const std::os::raw::c_char;
+
+    /// 1 when `risc0_circuit_rv32im_cuda_accum` also zeroizes (INVALID -> 0) the
+    /// accum buffer (fused into its finalize kernel on CUDA), so the caller skips its own zeroize.
+    pub fn risc0_circuit_rv32im_cuda_accum_zeroizes() -> std::os::raw::c_int;
     pub fn risc0_circuit_rv32im_cuda_warmup_eval_check() -> *const std::os::raw::c_char;
 
     /// Make the persistent stream wait for the eval_check stream to complete.
@@ -143,6 +147,51 @@ extern "C" {
     /// output (e.g., iNTT on check_poly). GPU-side dependency only — CPU returns
     /// immediately.
     pub fn risc0_circuit_rv32im_cuda_eval_check_dep() -> *const std::os::raw::c_char;
+}
+
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+extern "C" {
+    /// Witgen with an optional pinned staging buffer holding cycles|txns|bigint_bytes back to
+    /// back (`staged`, kept alive by the caller until the witgen's stream work is done), and
+    /// optional device-side injection of the five per-cycle columns (`cycle_cols`: cycle,
+    /// next_pc_low, next_pc_high, next_state, next_machine_mode).
+    pub fn risc0_circuit_rv32im_cuda_witgen_v2(
+        mode: u32,
+        buffers: *const RawExecBuffers,
+        preflight: *const RawPreflightTrace,
+        cycles: u32,
+        staged: *const u8,
+        cycle_cols: *const u32,
+        staged_id: u64,
+    ) -> *const std::os::raw::c_char;
+
+    /// Copy a staged trace to the device on a side stream (see ffi.cu).
+    pub fn risc0_circuit_rv32im_cuda_prefetch(
+        staged: *const u8,
+        bytes: usize,
+        id: u64,
+        out_ev: *mut *mut std::ffi::c_void,
+    ) -> *const std::os::raw::c_char;
+
+    /// Wait for and destroy an event returned by `risc0_circuit_rv32im_cuda_prefetch`.
+    pub fn risc0_circuit_rv32im_cuda_event_wait(
+        ev: *mut std::ffi::c_void,
+    ) -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_rv32im_cuda_host_alloc(
+        bytes: usize,
+        out: *mut *mut std::ffi::c_void,
+    ) -> *const std::os::raw::c_char;
+
+    pub fn risc0_circuit_rv32im_cuda_host_free(
+        ptr: *mut std::ffi::c_void,
+    ) -> *const std::os::raw::c_char;
+
+    /// Free the device buffers of the staged-trace slots not in use (see ffi.cu).
+    pub fn risc0_circuit_rv32im_cuda_release_slots() -> *const std::os::raw::c_char;
+
+    /// 1 once staging is off because a thread proved with another device current.
+    pub fn risc0_circuit_rv32im_cuda_staging_disabled() -> i32;
 }
 
 #[cfg(feature = "intel")]

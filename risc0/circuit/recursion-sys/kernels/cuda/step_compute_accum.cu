@@ -21,6 +21,7 @@ __device__ void step_compute_accum(
   uint32_t mask = steps - 1;
   Fp extern_args[96];
   Fp extern_outs[32];
+  uint32_t c1_bad = 0;
   // loc(unknown)
   Fp x0(2013265910);
   // loc(unknown)
@@ -31,25 +32,25 @@ __device__ void step_compute_accum(
   Fp x3(0);
   // loc("top(recursion::Top)/code(recursion::Code)/select(OneHot)/micro_ops(Reg)"("./zirgen/components/mux.h":59:25))
   auto x4 = arg0[1 * steps + ((cycle - 0) & mask)];
-  assert(x4 != Fp::invalid());
+  c1_bad |= (x4 == Fp::invalid());
   // loc("top(recursion::Top)/code(recursion::Code)/select(OneHot)/macro_ops(Reg)"("./zirgen/components/mux.h":59:25))
   auto x5 = arg0[2 * steps + ((cycle - 0) & mask)];
-  assert(x5 != Fp::invalid());
+  c1_bad |= (x5 == Fp::invalid());
   // loc("top(recursion::Top)/code(recursion::Code)/select(OneHot)/poseidon2_load(Reg)"("./zirgen/components/mux.h":59:25))
   auto x6 = arg0[3 * steps + ((cycle - 0) & mask)];
-  assert(x6 != Fp::invalid());
+  c1_bad |= (x6 == Fp::invalid());
   // loc("top(recursion::Top)/code(recursion::Code)/select(OneHot)/poseidon2_full(Reg)"("./zirgen/components/mux.h":59:25))
   auto x7 = arg0[4 * steps + ((cycle - 0) & mask)];
-  assert(x7 != Fp::invalid());
+  c1_bad |= (x7 == Fp::invalid());
   // loc("top(recursion::Top)/code(recursion::Code)/select(OneHot)/poseidon2_partial(Reg)"("./zirgen/components/mux.h":59:25))
   auto x8 = arg0[5 * steps + ((cycle - 0) & mask)];
-  assert(x8 != Fp::invalid());
+  c1_bad |= (x8 == Fp::invalid());
   // loc("top(recursion::Top)/code(recursion::Code)/select(OneHot)/poseidon2_store(Reg)"("./zirgen/components/mux.h":59:25))
   auto x9 = arg0[6 * steps + ((cycle - 0) & mask)];
-  assert(x9 != Fp::invalid());
+  c1_bad |= (x9 == Fp::invalid());
   // loc("top(recursion::Top)/code(recursion::Code)/select(OneHot)/checked_bytes(Reg)"("./zirgen/components/mux.h":59:25))
   auto x10 = arg0[7 * steps + ((cycle - 0) & mask)];
-  assert(x10 != Fp::invalid());
+  c1_bad |= (x10 == Fp::invalid());
   if (x4 != 0) {
     {
       // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -94,274 +95,274 @@ __device__ void step_compute_accum(
       auto x30 = arg3[9];
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x31 = arg2[0 * steps + ((cycle - 0) & mask)];
-      assert(x31 != Fp::invalid());
+      c1_bad |= (x31 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x32 = arg2[1 * steps + ((cycle - 0) & mask)];
-      assert(x32 != Fp::invalid());
+      c1_bad |= (x32 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x33 = arg2[10 * steps + ((cycle - 0) & mask)];
-      assert(x33 != Fp::invalid());
+      c1_bad |= (x33 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x34 = arg2[11 * steps + ((cycle - 0) & mask)];
-      assert(x34 != Fp::invalid());
+      c1_bad |= (x34 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x35 = arg2[12 * steps + ((cycle - 0) & mask)];
-      assert(x35 != Fp::invalid());
+      c1_bad |= (x35 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x36 = arg2[13 * steps + ((cycle - 0) & mask)];
-      assert(x36 != Fp::invalid());
+      c1_bad |= (x36 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x37 = arg2[14 * steps + ((cycle - 0) & mask)];
-      assert(x37 != Fp::invalid());
+      c1_bad |= (x37 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x38 = arg2[15 * steps + ((cycle - 0) & mask)];
-      assert(x38 != Fp::invalid());
+      c1_bad |= (x38 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x39 = arg2[16 * steps + ((cycle - 0) & mask)];
-      assert(x39 != Fp::invalid());
+      c1_bad |= (x39 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x40 = arg2[17 * steps + ((cycle - 0) & mask)];
-      assert(x40 != Fp::invalid());
+      c1_bad |= (x40 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x41 = arg2[18 * steps + ((cycle - 0) & mask)];
-      assert(x41 != Fp::invalid());
+      c1_bad |= (x41 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x42 = arg2[19 * steps + ((cycle - 0) & mask)];
-      assert(x42 != Fp::invalid());
+      c1_bad |= (x42 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x43 = arg2[2 * steps + ((cycle - 0) & mask)];
-      assert(x43 != Fp::invalid());
+      c1_bad |= (x43 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x44 = arg2[20 * steps + ((cycle - 0) & mask)];
-      assert(x44 != Fp::invalid());
+      c1_bad |= (x44 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x45 = arg2[21 * steps + ((cycle - 0) & mask)];
-      assert(x45 != Fp::invalid());
+      c1_bad |= (x45 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x46 = arg2[22 * steps + ((cycle - 0) & mask)];
-      assert(x46 != Fp::invalid());
+      c1_bad |= (x46 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x47 = arg2[23 * steps + ((cycle - 0) & mask)];
-      assert(x47 != Fp::invalid());
+      c1_bad |= (x47 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x48 = arg2[24 * steps + ((cycle - 0) & mask)];
-      assert(x48 != Fp::invalid());
+      c1_bad |= (x48 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x49 = arg2[25 * steps + ((cycle - 0) & mask)];
-      assert(x49 != Fp::invalid());
+      c1_bad |= (x49 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x50 = arg2[26 * steps + ((cycle - 0) & mask)];
-      assert(x50 != Fp::invalid());
+      c1_bad |= (x50 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x51 = arg2[27 * steps + ((cycle - 0) & mask)];
-      assert(x51 != Fp::invalid());
+      c1_bad |= (x51 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x52 = arg2[28 * steps + ((cycle - 0) & mask)];
-      assert(x52 != Fp::invalid());
+      c1_bad |= (x52 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x53 = arg2[29 * steps + ((cycle - 0) & mask)];
-      assert(x53 != Fp::invalid());
+      c1_bad |= (x53 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x54 = arg2[3 * steps + ((cycle - 0) & mask)];
-      assert(x54 != Fp::invalid());
+      c1_bad |= (x54 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x55 = arg2[30 * steps + ((cycle - 0) & mask)];
-      assert(x55 != Fp::invalid());
+      c1_bad |= (x55 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x56 = arg2[31 * steps + ((cycle - 0) & mask)];
-      assert(x56 != Fp::invalid());
+      c1_bad |= (x56 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x57 = arg2[32 * steps + ((cycle - 0) & mask)];
-      assert(x57 != Fp::invalid());
+      c1_bad |= (x57 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x58 = arg2[33 * steps + ((cycle - 0) & mask)];
-      assert(x58 != Fp::invalid());
+      c1_bad |= (x58 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x59 = arg2[34 * steps + ((cycle - 0) & mask)];
-      assert(x59 != Fp::invalid());
+      c1_bad |= (x59 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x60 = arg2[35 * steps + ((cycle - 0) & mask)];
-      assert(x60 != Fp::invalid());
+      c1_bad |= (x60 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x61 = arg2[36 * steps + ((cycle - 0) & mask)];
-      assert(x61 != Fp::invalid());
+      c1_bad |= (x61 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x62 = arg2[37 * steps + ((cycle - 0) & mask)];
-      assert(x62 != Fp::invalid());
+      c1_bad |= (x62 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x63 = arg2[38 * steps + ((cycle - 0) & mask)];
-      assert(x63 != Fp::invalid());
+      c1_bad |= (x63 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x64 = arg2[39 * steps + ((cycle - 0) & mask)];
-      assert(x64 != Fp::invalid());
+      c1_bad |= (x64 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x65 = arg2[4 * steps + ((cycle - 0) & mask)];
-      assert(x65 != Fp::invalid());
+      c1_bad |= (x65 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x66 = arg2[40 * steps + ((cycle - 0) & mask)];
-      assert(x66 != Fp::invalid());
+      c1_bad |= (x66 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x67 = arg2[41 * steps + ((cycle - 0) & mask)];
-      assert(x67 != Fp::invalid());
+      c1_bad |= (x67 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x68 = arg2[42 * steps + ((cycle - 0) & mask)];
-      assert(x68 != Fp::invalid());
+      c1_bad |= (x68 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x69 = arg2[43 * steps + ((cycle - 0) & mask)];
-      assert(x69 != Fp::invalid());
+      c1_bad |= (x69 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x70 = arg2[44 * steps + ((cycle - 0) & mask)];
-      assert(x70 != Fp::invalid());
+      c1_bad |= (x70 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x71 = arg2[45 * steps + ((cycle - 0) & mask)];
-      assert(x71 != Fp::invalid());
+      c1_bad |= (x71 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x72 = arg2[46 * steps + ((cycle - 0) & mask)];
-      assert(x72 != Fp::invalid());
+      c1_bad |= (x72 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x73 = arg2[47 * steps + ((cycle - 0) & mask)];
-      assert(x73 != Fp::invalid());
+      c1_bad |= (x73 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x74 = arg2[48 * steps + ((cycle - 0) & mask)];
-      assert(x74 != Fp::invalid());
+      c1_bad |= (x74 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x75 = arg2[49 * steps + ((cycle - 0) & mask)];
-      assert(x75 != Fp::invalid());
+      c1_bad |= (x75 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x76 = arg2[5 * steps + ((cycle - 0) & mask)];
-      assert(x76 != Fp::invalid());
+      c1_bad |= (x76 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x77 = arg2[50 * steps + ((cycle - 0) & mask)];
-      assert(x77 != Fp::invalid());
+      c1_bad |= (x77 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x78 = arg2[51 * steps + ((cycle - 0) & mask)];
-      assert(x78 != Fp::invalid());
+      c1_bad |= (x78 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x79 = arg2[52 * steps + ((cycle - 0) & mask)];
-      assert(x79 != Fp::invalid());
+      c1_bad |= (x79 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x80 = arg2[53 * steps + ((cycle - 0) & mask)];
-      assert(x80 != Fp::invalid());
+      c1_bad |= (x80 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x81 = arg2[54 * steps + ((cycle - 0) & mask)];
-      assert(x81 != Fp::invalid());
+      c1_bad |= (x81 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x82 = arg2[55 * steps + ((cycle - 0) & mask)];
-      assert(x82 != Fp::invalid());
+      c1_bad |= (x82 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x83 = arg2[56 * steps + ((cycle - 0) & mask)];
-      assert(x83 != Fp::invalid());
+      c1_bad |= (x83 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x84 = arg2[57 * steps + ((cycle - 0) & mask)];
-      assert(x84 != Fp::invalid());
+      c1_bad |= (x84 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x85 = arg2[58 * steps + ((cycle - 0) & mask)];
-      assert(x85 != Fp::invalid());
+      c1_bad |= (x85 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x86 = arg2[59 * steps + ((cycle - 0) & mask)];
-      assert(x86 != Fp::invalid());
+      c1_bad |= (x86 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x87 = arg2[6 * steps + ((cycle - 0) & mask)];
-      assert(x87 != Fp::invalid());
+      c1_bad |= (x87 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x88 = arg2[60 * steps + ((cycle - 0) & mask)];
-      assert(x88 != Fp::invalid());
+      c1_bad |= (x88 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x89 = arg2[61 * steps + ((cycle - 0) & mask)];
-      assert(x89 != Fp::invalid());
+      c1_bad |= (x89 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x90 = arg2[62 * steps + ((cycle - 0) & mask)];
-      assert(x90 != Fp::invalid());
+      c1_bad |= (x90 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x91 = arg2[63 * steps + ((cycle - 0) & mask)];
-      assert(x91 != Fp::invalid());
+      c1_bad |= (x91 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x92 = arg2[64 * steps + ((cycle - 0) & mask)];
-      assert(x92 != Fp::invalid());
+      c1_bad |= (x92 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x93 = arg2[65 * steps + ((cycle - 0) & mask)];
-      assert(x93 != Fp::invalid());
+      c1_bad |= (x93 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x94 = arg2[66 * steps + ((cycle - 0) & mask)];
-      assert(x94 != Fp::invalid());
+      c1_bad |= (x94 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x95 = arg2[67 * steps + ((cycle - 0) & mask)];
-      assert(x95 != Fp::invalid());
+      c1_bad |= (x95 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x96 = arg2[68 * steps + ((cycle - 0) & mask)];
-      assert(x96 != Fp::invalid());
+      c1_bad |= (x96 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x97 = arg2[69 * steps + ((cycle - 0) & mask)];
-      assert(x97 != Fp::invalid());
+      c1_bad |= (x97 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x98 = arg2[7 * steps + ((cycle - 0) & mask)];
-      assert(x98 != Fp::invalid());
+      c1_bad |= (x98 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x99 = arg2[70 * steps + ((cycle - 0) & mask)];
-      assert(x99 != Fp::invalid());
+      c1_bad |= (x99 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x100 = arg2[71 * steps + ((cycle - 0) & mask)];
-      assert(x100 != Fp::invalid());
+      c1_bad |= (x100 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x101 = arg2[72 * steps + ((cycle - 0) & mask)];
-      assert(x101 != Fp::invalid());
+      c1_bad |= (x101 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x102 = arg2[73 * steps + ((cycle - 0) & mask)];
-      assert(x102 != Fp::invalid());
+      c1_bad |= (x102 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x103 = arg2[74 * steps + ((cycle - 0) & mask)];
-      assert(x103 != Fp::invalid());
+      c1_bad |= (x103 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x104 = arg2[75 * steps + ((cycle - 0) & mask)];
-      assert(x104 != Fp::invalid());
+      c1_bad |= (x104 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x105 = arg2[76 * steps + ((cycle - 0) & mask)];
-      assert(x105 != Fp::invalid());
+      c1_bad |= (x105 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x106 = arg2[77 * steps + ((cycle - 0) & mask)];
-      assert(x106 != Fp::invalid());
+      c1_bad |= (x106 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x107 = arg2[78 * steps + ((cycle - 0) & mask)];
-      assert(x107 != Fp::invalid());
+      c1_bad |= (x107 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x108 = arg2[79 * steps + ((cycle - 0) & mask)];
-      assert(x108 != Fp::invalid());
+      c1_bad |= (x108 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x109 = arg2[8 * steps + ((cycle - 0) & mask)];
-      assert(x109 != Fp::invalid());
+      c1_bad |= (x109 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x110 = arg2[80 * steps + ((cycle - 0) & mask)];
-      assert(x110 != Fp::invalid());
+      c1_bad |= (x110 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x111 = arg2[81 * steps + ((cycle - 0) & mask)];
-      assert(x111 != Fp::invalid());
+      c1_bad |= (x111 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x112 = arg2[82 * steps + ((cycle - 0) & mask)];
-      assert(x112 != Fp::invalid());
+      c1_bad |= (x112 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x113 = arg2[83 * steps + ((cycle - 0) & mask)];
-      assert(x113 != Fp::invalid());
+      c1_bad |= (x113 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x114 = arg2[84 * steps + ((cycle - 0) & mask)];
-      assert(x114 != Fp::invalid());
+      c1_bad |= (x114 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x115 = arg2[85 * steps + ((cycle - 0) & mask)];
-      assert(x115 != Fp::invalid());
+      c1_bad |= (x115 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x116 = arg2[86 * steps + ((cycle - 0) & mask)];
-      assert(x116 != Fp::invalid());
+      c1_bad |= (x116 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x117 = arg2[87 * steps + ((cycle - 0) & mask)];
-      assert(x117 != Fp::invalid());
+      c1_bad |= (x117 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x118 = arg2[88 * steps + ((cycle - 0) & mask)];
-      assert(x118 != Fp::invalid());
+      c1_bad |= (x118 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x119 = arg2[89 * steps + ((cycle - 0) & mask)];
-      assert(x119 != Fp::invalid());
+      c1_bad |= (x119 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/micro_ops(recursion::MicroOps)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x120 = arg2[9 * steps + ((cycle - 0) & mask)];
-      assert(x120 != Fp::invalid());
+      c1_bad |= (x120 == Fp::invalid());
       // loc("./zirgen/components/plonk.h":230:23)
       auto x121 = x11 * x31;
       // loc("./zirgen/components/plonk.h":230:23)
@@ -2980,7 +2981,7 @@ __device__ void step_compute_accum(
   if (x5 != 0) {
     // loc("zirgen/compiler/edsl/component.cpp":49:15)
     auto x1425 = arg0[11 * steps + ((cycle - 0) & mask)];
-    assert(x1425 != Fp::invalid());
+    c1_bad |= (x1425 == Fp::invalid());
     if (x1425 != 0) {
       {
         // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -3025,94 +3026,94 @@ __device__ void step_compute_accum(
         auto x1445 = arg3[9];
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1446 = arg2[0 * steps + ((cycle - 0) & mask)];
-        assert(x1446 != Fp::invalid());
+        c1_bad |= (x1446 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1447 = arg2[1 * steps + ((cycle - 0) & mask)];
-        assert(x1447 != Fp::invalid());
+        c1_bad |= (x1447 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1448 = arg2[11 * steps + ((cycle - 0) & mask)];
-        assert(x1448 != Fp::invalid());
+        c1_bad |= (x1448 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1449 = arg2[12 * steps + ((cycle - 0) & mask)];
-        assert(x1449 != Fp::invalid());
+        c1_bad |= (x1449 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1450 = arg2[13 * steps + ((cycle - 0) & mask)];
-        assert(x1450 != Fp::invalid());
+        c1_bad |= (x1450 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1451 = arg2[14 * steps + ((cycle - 0) & mask)];
-        assert(x1451 != Fp::invalid());
+        c1_bad |= (x1451 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1452 = arg2[15 * steps + ((cycle - 0) & mask)];
-        assert(x1452 != Fp::invalid());
+        c1_bad |= (x1452 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1453 = arg2[16 * steps + ((cycle - 0) & mask)];
-        assert(x1453 != Fp::invalid());
+        c1_bad |= (x1453 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1454 = arg2[17 * steps + ((cycle - 0) & mask)];
-        assert(x1454 != Fp::invalid());
+        c1_bad |= (x1454 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1455 = arg2[18 * steps + ((cycle - 0) & mask)];
-        assert(x1455 != Fp::invalid());
+        c1_bad |= (x1455 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1456 = arg2[19 * steps + ((cycle - 0) & mask)];
-        assert(x1456 != Fp::invalid());
+        c1_bad |= (x1456 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1457 = arg2[2 * steps + ((cycle - 0) & mask)];
-        assert(x1457 != Fp::invalid());
+        c1_bad |= (x1457 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1458 = arg2[20 * steps + ((cycle - 0) & mask)];
-        assert(x1458 != Fp::invalid());
+        c1_bad |= (x1458 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1459 = arg2[21 * steps + ((cycle - 0) & mask)];
-        assert(x1459 != Fp::invalid());
+        c1_bad |= (x1459 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1460 = arg2[22 * steps + ((cycle - 0) & mask)];
-        assert(x1460 != Fp::invalid());
+        c1_bad |= (x1460 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1461 = arg2[23 * steps + ((cycle - 0) & mask)];
-        assert(x1461 != Fp::invalid());
+        c1_bad |= (x1461 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1462 = arg2[24 * steps + ((cycle - 0) & mask)];
-        assert(x1462 != Fp::invalid());
+        c1_bad |= (x1462 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1463 = arg2[25 * steps + ((cycle - 0) & mask)];
-        assert(x1463 != Fp::invalid());
+        c1_bad |= (x1463 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1464 = arg2[26 * steps + ((cycle - 0) & mask)];
-        assert(x1464 != Fp::invalid());
+        c1_bad |= (x1464 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1465 = arg2[27 * steps + ((cycle - 0) & mask)];
-        assert(x1465 != Fp::invalid());
+        c1_bad |= (x1465 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1466 = arg2[28 * steps + ((cycle - 0) & mask)];
-        assert(x1466 != Fp::invalid());
+        c1_bad |= (x1466 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1467 = arg2[29 * steps + ((cycle - 0) & mask)];
-        assert(x1467 != Fp::invalid());
+        c1_bad |= (x1467 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1468 = arg2[3 * steps + ((cycle - 0) & mask)];
-        assert(x1468 != Fp::invalid());
+        c1_bad |= (x1468 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1469 = arg2[30 * steps + ((cycle - 0) & mask)];
-        assert(x1469 != Fp::invalid());
+        c1_bad |= (x1469 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1470 = arg2[31 * steps + ((cycle - 0) & mask)];
-        assert(x1470 != Fp::invalid());
+        c1_bad |= (x1470 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1471 = arg2[32 * steps + ((cycle - 0) & mask)];
-        assert(x1471 != Fp::invalid());
+        c1_bad |= (x1471 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1472 = arg2[33 * steps + ((cycle - 0) & mask)];
-        assert(x1472 != Fp::invalid());
+        c1_bad |= (x1472 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1473 = arg2[34 * steps + ((cycle - 0) & mask)];
-        assert(x1473 != Fp::invalid());
+        c1_bad |= (x1473 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_and_elem(recursion::BitAndElem)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1474 = arg2[35 * steps + ((cycle - 0) & mask)];
-        assert(x1474 != Fp::invalid());
+        c1_bad |= (x1474 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1475 = arg2[4 * steps + ((cycle - 0) & mask)];
-        assert(x1475 != Fp::invalid());
+        c1_bad |= (x1475 == Fp::invalid());
         // loc("./zirgen/components/plonk.h":230:23)
         auto x1476 = x1426 * x1446;
         // loc("./zirgen/components/plonk.h":230:23)
@@ -4024,7 +4025,7 @@ __device__ void step_compute_accum(
     }
     // loc("zirgen/compiler/edsl/component.cpp":49:15)
     auto x1927 = arg0[12 * steps + ((cycle - 0) & mask)];
-    assert(x1927 != Fp::invalid());
+    c1_bad |= (x1927 == Fp::invalid());
     if (x1927 != 0) {
       {
         // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -4069,94 +4070,94 @@ __device__ void step_compute_accum(
         auto x1947 = arg3[9];
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1948 = arg2[0 * steps + ((cycle - 0) & mask)];
-        assert(x1948 != Fp::invalid());
+        c1_bad |= (x1948 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1949 = arg2[1 * steps + ((cycle - 0) & mask)];
-        assert(x1949 != Fp::invalid());
+        c1_bad |= (x1949 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1950 = arg2[11 * steps + ((cycle - 0) & mask)];
-        assert(x1950 != Fp::invalid());
+        c1_bad |= (x1950 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1951 = arg2[12 * steps + ((cycle - 0) & mask)];
-        assert(x1951 != Fp::invalid());
+        c1_bad |= (x1951 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1952 = arg2[13 * steps + ((cycle - 0) & mask)];
-        assert(x1952 != Fp::invalid());
+        c1_bad |= (x1952 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1953 = arg2[14 * steps + ((cycle - 0) & mask)];
-        assert(x1953 != Fp::invalid());
+        c1_bad |= (x1953 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1954 = arg2[15 * steps + ((cycle - 0) & mask)];
-        assert(x1954 != Fp::invalid());
+        c1_bad |= (x1954 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1955 = arg2[16 * steps + ((cycle - 0) & mask)];
-        assert(x1955 != Fp::invalid());
+        c1_bad |= (x1955 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1956 = arg2[17 * steps + ((cycle - 0) & mask)];
-        assert(x1956 != Fp::invalid());
+        c1_bad |= (x1956 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1957 = arg2[18 * steps + ((cycle - 0) & mask)];
-        assert(x1957 != Fp::invalid());
+        c1_bad |= (x1957 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1958 = arg2[19 * steps + ((cycle - 0) & mask)];
-        assert(x1958 != Fp::invalid());
+        c1_bad |= (x1958 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1959 = arg2[2 * steps + ((cycle - 0) & mask)];
-        assert(x1959 != Fp::invalid());
+        c1_bad |= (x1959 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1960 = arg2[20 * steps + ((cycle - 0) & mask)];
-        assert(x1960 != Fp::invalid());
+        c1_bad |= (x1960 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1961 = arg2[21 * steps + ((cycle - 0) & mask)];
-        assert(x1961 != Fp::invalid());
+        c1_bad |= (x1961 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1962 = arg2[22 * steps + ((cycle - 0) & mask)];
-        assert(x1962 != Fp::invalid());
+        c1_bad |= (x1962 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1963 = arg2[23 * steps + ((cycle - 0) & mask)];
-        assert(x1963 != Fp::invalid());
+        c1_bad |= (x1963 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1964 = arg2[24 * steps + ((cycle - 0) & mask)];
-        assert(x1964 != Fp::invalid());
+        c1_bad |= (x1964 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1965 = arg2[25 * steps + ((cycle - 0) & mask)];
-        assert(x1965 != Fp::invalid());
+        c1_bad |= (x1965 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1966 = arg2[26 * steps + ((cycle - 0) & mask)];
-        assert(x1966 != Fp::invalid());
+        c1_bad |= (x1966 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1967 = arg2[27 * steps + ((cycle - 0) & mask)];
-        assert(x1967 != Fp::invalid());
+        c1_bad |= (x1967 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1968 = arg2[28 * steps + ((cycle - 0) & mask)];
-        assert(x1968 != Fp::invalid());
+        c1_bad |= (x1968 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1969 = arg2[29 * steps + ((cycle - 0) & mask)];
-        assert(x1969 != Fp::invalid());
+        c1_bad |= (x1969 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1970 = arg2[3 * steps + ((cycle - 0) & mask)];
-        assert(x1970 != Fp::invalid());
+        c1_bad |= (x1970 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1971 = arg2[30 * steps + ((cycle - 0) & mask)];
-        assert(x1971 != Fp::invalid());
+        c1_bad |= (x1971 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x1972 = arg2[31 * steps + ((cycle - 0) & mask)];
-        assert(x1972 != Fp::invalid());
+        c1_bad |= (x1972 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1973 = arg2[32 * steps + ((cycle - 0) & mask)];
-        assert(x1973 != Fp::invalid());
+        c1_bad |= (x1973 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1974 = arg2[33 * steps + ((cycle - 0) & mask)];
-        assert(x1974 != Fp::invalid());
+        c1_bad |= (x1974 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1975 = arg2[34 * steps + ((cycle - 0) & mask)];
-        assert(x1975 != Fp::invalid());
+        c1_bad |= (x1975 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/bit_op_shorts(recursion::BitOpShorts)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1976 = arg2[35 * steps + ((cycle - 0) & mask)];
-        assert(x1976 != Fp::invalid());
+        c1_bad |= (x1976 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x1977 = arg2[4 * steps + ((cycle - 0) & mask)];
-        assert(x1977 != Fp::invalid());
+        c1_bad |= (x1977 == Fp::invalid());
         // loc("./zirgen/components/plonk.h":230:23)
         auto x1978 = x1928 * x1948;
         // loc("./zirgen/components/plonk.h":230:23)
@@ -5068,7 +5069,7 @@ __device__ void step_compute_accum(
     }
     // loc("zirgen/compiler/edsl/component.cpp":49:15)
     auto x2429 = arg0[13 * steps + ((cycle - 0) & mask)];
-    assert(x2429 != Fp::invalid());
+    c1_bad |= (x2429 == Fp::invalid());
     if (x2429 != 0) {
       {
         // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -5113,64 +5114,64 @@ __device__ void step_compute_accum(
         auto x2449 = arg3[9];
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2450 = arg2[0 * steps + ((cycle - 0) & mask)];
-        assert(x2450 != Fp::invalid());
+        c1_bad |= (x2450 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2451 = arg2[1 * steps + ((cycle - 0) & mask)];
-        assert(x2451 != Fp::invalid());
+        c1_bad |= (x2451 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2452 = arg2[11 * steps + ((cycle - 0) & mask)];
-        assert(x2452 != Fp::invalid());
+        c1_bad |= (x2452 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2453 = arg2[12 * steps + ((cycle - 0) & mask)];
-        assert(x2453 != Fp::invalid());
+        c1_bad |= (x2453 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2454 = arg2[13 * steps + ((cycle - 0) & mask)];
-        assert(x2454 != Fp::invalid());
+        c1_bad |= (x2454 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2455 = arg2[14 * steps + ((cycle - 0) & mask)];
-        assert(x2455 != Fp::invalid());
+        c1_bad |= (x2455 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2456 = arg2[15 * steps + ((cycle - 0) & mask)];
-        assert(x2456 != Fp::invalid());
+        c1_bad |= (x2456 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2457 = arg2[16 * steps + ((cycle - 0) & mask)];
-        assert(x2457 != Fp::invalid());
+        c1_bad |= (x2457 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2458 = arg2[17 * steps + ((cycle - 0) & mask)];
-        assert(x2458 != Fp::invalid());
+        c1_bad |= (x2458 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2459 = arg2[18 * steps + ((cycle - 0) & mask)];
-        assert(x2459 != Fp::invalid());
+        c1_bad |= (x2459 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2460 = arg2[19 * steps + ((cycle - 0) & mask)];
-        assert(x2460 != Fp::invalid());
+        c1_bad |= (x2460 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2461 = arg2[2 * steps + ((cycle - 0) & mask)];
-        assert(x2461 != Fp::invalid());
+        c1_bad |= (x2461 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2462 = arg2[20 * steps + ((cycle - 0) & mask)];
-        assert(x2462 != Fp::invalid());
+        c1_bad |= (x2462 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2463 = arg2[21 * steps + ((cycle - 0) & mask)];
-        assert(x2463 != Fp::invalid());
+        c1_bad |= (x2463 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2464 = arg2[22 * steps + ((cycle - 0) & mask)];
-        assert(x2464 != Fp::invalid());
+        c1_bad |= (x2464 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2465 = arg2[23 * steps + ((cycle - 0) & mask)];
-        assert(x2465 != Fp::invalid());
+        c1_bad |= (x2465 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2466 = arg2[24 * steps + ((cycle - 0) & mask)];
-        assert(x2466 != Fp::invalid());
+        c1_bad |= (x2466 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_init(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2467 = arg2[25 * steps + ((cycle - 0) & mask)];
-        assert(x2467 != Fp::invalid());
+        c1_bad |= (x2467 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2468 = arg2[3 * steps + ((cycle - 0) & mask)];
-        assert(x2468 != Fp::invalid());
+        c1_bad |= (x2468 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2469 = arg2[4 * steps + ((cycle - 0) & mask)];
-        assert(x2469 != Fp::invalid());
+        c1_bad |= (x2469 == Fp::invalid());
         // loc("./zirgen/components/plonk.h":230:23)
         auto x2470 = x2430 * x2450;
         // loc("./zirgen/components/plonk.h":230:23)
@@ -5736,7 +5737,7 @@ __device__ void step_compute_accum(
     }
     // loc("zirgen/compiler/edsl/component.cpp":49:15)
     auto x2748 = arg0[14 * steps + ((cycle - 0) & mask)];
-    assert(x2748 != Fp::invalid());
+    c1_bad |= (x2748 == Fp::invalid());
     if (x2748 != 0) {
       {
         // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -5781,64 +5782,64 @@ __device__ void step_compute_accum(
         auto x2768 = arg3[9];
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2769 = arg2[0 * steps + ((cycle - 0) & mask)];
-        assert(x2769 != Fp::invalid());
+        c1_bad |= (x2769 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2770 = arg2[1 * steps + ((cycle - 0) & mask)];
-        assert(x2770 != Fp::invalid());
+        c1_bad |= (x2770 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2771 = arg2[11 * steps + ((cycle - 0) & mask)];
-        assert(x2771 != Fp::invalid());
+        c1_bad |= (x2771 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2772 = arg2[12 * steps + ((cycle - 0) & mask)];
-        assert(x2772 != Fp::invalid());
+        c1_bad |= (x2772 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2773 = arg2[13 * steps + ((cycle - 0) & mask)];
-        assert(x2773 != Fp::invalid());
+        c1_bad |= (x2773 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2774 = arg2[14 * steps + ((cycle - 0) & mask)];
-        assert(x2774 != Fp::invalid());
+        c1_bad |= (x2774 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2775 = arg2[15 * steps + ((cycle - 0) & mask)];
-        assert(x2775 != Fp::invalid());
+        c1_bad |= (x2775 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2776 = arg2[16 * steps + ((cycle - 0) & mask)];
-        assert(x2776 != Fp::invalid());
+        c1_bad |= (x2776 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2777 = arg2[17 * steps + ((cycle - 0) & mask)];
-        assert(x2777 != Fp::invalid());
+        c1_bad |= (x2777 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2778 = arg2[18 * steps + ((cycle - 0) & mask)];
-        assert(x2778 != Fp::invalid());
+        c1_bad |= (x2778 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2779 = arg2[19 * steps + ((cycle - 0) & mask)];
-        assert(x2779 != Fp::invalid());
+        c1_bad |= (x2779 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2780 = arg2[2 * steps + ((cycle - 0) & mask)];
-        assert(x2780 != Fp::invalid());
+        c1_bad |= (x2780 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2781 = arg2[20 * steps + ((cycle - 0) & mask)];
-        assert(x2781 != Fp::invalid());
+        c1_bad |= (x2781 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x2782 = arg2[21 * steps + ((cycle - 0) & mask)];
-        assert(x2782 != Fp::invalid());
+        c1_bad |= (x2782 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2783 = arg2[22 * steps + ((cycle - 0) & mask)];
-        assert(x2783 != Fp::invalid());
+        c1_bad |= (x2783 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2784 = arg2[23 * steps + ((cycle - 0) & mask)];
-        assert(x2784 != Fp::invalid());
+        c1_bad |= (x2784 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2785 = arg2[24 * steps + ((cycle - 0) & mask)];
-        assert(x2785 != Fp::invalid());
+        c1_bad |= (x2785 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_fini(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2786 = arg2[25 * steps + ((cycle - 0) & mask)];
-        assert(x2786 != Fp::invalid());
+        c1_bad |= (x2786 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2787 = arg2[3 * steps + ((cycle - 0) & mask)];
-        assert(x2787 != Fp::invalid());
+        c1_bad |= (x2787 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x2788 = arg2[4 * steps + ((cycle - 0) & mask)];
-        assert(x2788 != Fp::invalid());
+        c1_bad |= (x2788 == Fp::invalid());
         // loc("./zirgen/components/plonk.h":230:23)
         auto x2789 = x2749 * x2769;
         // loc("./zirgen/components/plonk.h":230:23)
@@ -6404,7 +6405,7 @@ __device__ void step_compute_accum(
     }
     // loc("zirgen/compiler/edsl/component.cpp":49:15)
     auto x3067 = arg0[15 * steps + ((cycle - 0) & mask)];
-    assert(x3067 != Fp::invalid());
+    c1_bad |= (x3067 == Fp::invalid());
     if (x3067 != 0) {
       {
         // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -6449,64 +6450,64 @@ __device__ void step_compute_accum(
         auto x3087 = arg3[9];
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3088 = arg2[0 * steps + ((cycle - 0) & mask)];
-        assert(x3088 != Fp::invalid());
+        c1_bad |= (x3088 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3089 = arg2[1 * steps + ((cycle - 0) & mask)];
-        assert(x3089 != Fp::invalid());
+        c1_bad |= (x3089 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3090 = arg2[11 * steps + ((cycle - 0) & mask)];
-        assert(x3090 != Fp::invalid());
+        c1_bad |= (x3090 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3091 = arg2[12 * steps + ((cycle - 0) & mask)];
-        assert(x3091 != Fp::invalid());
+        c1_bad |= (x3091 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3092 = arg2[13 * steps + ((cycle - 0) & mask)];
-        assert(x3092 != Fp::invalid());
+        c1_bad |= (x3092 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3093 = arg2[14 * steps + ((cycle - 0) & mask)];
-        assert(x3093 != Fp::invalid());
+        c1_bad |= (x3093 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3094 = arg2[15 * steps + ((cycle - 0) & mask)];
-        assert(x3094 != Fp::invalid());
+        c1_bad |= (x3094 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3095 = arg2[16 * steps + ((cycle - 0) & mask)];
-        assert(x3095 != Fp::invalid());
+        c1_bad |= (x3095 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3096 = arg2[17 * steps + ((cycle - 0) & mask)];
-        assert(x3096 != Fp::invalid());
+        c1_bad |= (x3096 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3097 = arg2[18 * steps + ((cycle - 0) & mask)];
-        assert(x3097 != Fp::invalid());
+        c1_bad |= (x3097 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3098 = arg2[19 * steps + ((cycle - 0) & mask)];
-        assert(x3098 != Fp::invalid());
+        c1_bad |= (x3098 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3099 = arg2[2 * steps + ((cycle - 0) & mask)];
-        assert(x3099 != Fp::invalid());
+        c1_bad |= (x3099 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3100 = arg2[20 * steps + ((cycle - 0) & mask)];
-        assert(x3100 != Fp::invalid());
+        c1_bad |= (x3100 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3101 = arg2[21 * steps + ((cycle - 0) & mask)];
-        assert(x3101 != Fp::invalid());
+        c1_bad |= (x3101 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3102 = arg2[22 * steps + ((cycle - 0) & mask)];
-        assert(x3102 != Fp::invalid());
+        c1_bad |= (x3102 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3103 = arg2[23 * steps + ((cycle - 0) & mask)];
-        assert(x3103 != Fp::invalid());
+        c1_bad |= (x3103 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3104 = arg2[24 * steps + ((cycle - 0) & mask)];
-        assert(x3104 != Fp::invalid());
+        c1_bad |= (x3104 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_load(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3105 = arg2[25 * steps + ((cycle - 0) & mask)];
-        assert(x3105 != Fp::invalid());
+        c1_bad |= (x3105 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3106 = arg2[3 * steps + ((cycle - 0) & mask)];
-        assert(x3106 != Fp::invalid());
+        c1_bad |= (x3106 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3107 = arg2[4 * steps + ((cycle - 0) & mask)];
-        assert(x3107 != Fp::invalid());
+        c1_bad |= (x3107 == Fp::invalid());
         // loc("./zirgen/components/plonk.h":230:23)
         auto x3108 = x3068 * x3088;
         // loc("./zirgen/components/plonk.h":230:23)
@@ -7072,7 +7073,7 @@ __device__ void step_compute_accum(
     }
     // loc("zirgen/compiler/edsl/component.cpp":49:15)
     auto x3386 = arg0[16 * steps + ((cycle - 0) & mask)];
-    assert(x3386 != Fp::invalid());
+    c1_bad |= (x3386 == Fp::invalid());
     if (x3386 != 0) {
       {
         // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -7117,64 +7118,64 @@ __device__ void step_compute_accum(
         auto x3406 = arg3[9];
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3407 = arg2[0 * steps + ((cycle - 0) & mask)];
-        assert(x3407 != Fp::invalid());
+        c1_bad |= (x3407 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3408 = arg2[1 * steps + ((cycle - 0) & mask)];
-        assert(x3408 != Fp::invalid());
+        c1_bad |= (x3408 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3409 = arg2[11 * steps + ((cycle - 0) & mask)];
-        assert(x3409 != Fp::invalid());
+        c1_bad |= (x3409 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3410 = arg2[12 * steps + ((cycle - 0) & mask)];
-        assert(x3410 != Fp::invalid());
+        c1_bad |= (x3410 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3411 = arg2[13 * steps + ((cycle - 0) & mask)];
-        assert(x3411 != Fp::invalid());
+        c1_bad |= (x3411 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3412 = arg2[14 * steps + ((cycle - 0) & mask)];
-        assert(x3412 != Fp::invalid());
+        c1_bad |= (x3412 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3413 = arg2[15 * steps + ((cycle - 0) & mask)];
-        assert(x3413 != Fp::invalid());
+        c1_bad |= (x3413 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3414 = arg2[16 * steps + ((cycle - 0) & mask)];
-        assert(x3414 != Fp::invalid());
+        c1_bad |= (x3414 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3415 = arg2[17 * steps + ((cycle - 0) & mask)];
-        assert(x3415 != Fp::invalid());
+        c1_bad |= (x3415 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3416 = arg2[18 * steps + ((cycle - 0) & mask)];
-        assert(x3416 != Fp::invalid());
+        c1_bad |= (x3416 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3417 = arg2[19 * steps + ((cycle - 0) & mask)];
-        assert(x3417 != Fp::invalid());
+        c1_bad |= (x3417 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3418 = arg2[2 * steps + ((cycle - 0) & mask)];
-        assert(x3418 != Fp::invalid());
+        c1_bad |= (x3418 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3419 = arg2[20 * steps + ((cycle - 0) & mask)];
-        assert(x3419 != Fp::invalid());
+        c1_bad |= (x3419 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3420 = arg2[21 * steps + ((cycle - 0) & mask)];
-        assert(x3420 != Fp::invalid());
+        c1_bad |= (x3420 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3421 = arg2[22 * steps + ((cycle - 0) & mask)];
-        assert(x3421 != Fp::invalid());
+        c1_bad |= (x3421 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3422 = arg2[23 * steps + ((cycle - 0) & mask)];
-        assert(x3422 != Fp::invalid());
+        c1_bad |= (x3422 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3423 = arg2[24 * steps + ((cycle - 0) & mask)];
-        assert(x3423 != Fp::invalid());
+        c1_bad |= (x3423 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/sha_mix(recursion::ShaWrap)/sha_cycle(recursion::ShaCycle)/recursion::WomBody/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3424 = arg2[25 * steps + ((cycle - 0) & mask)];
-        assert(x3424 != Fp::invalid());
+        c1_bad |= (x3424 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3425 = arg2[3 * steps + ((cycle - 0) & mask)];
-        assert(x3425 != Fp::invalid());
+        c1_bad |= (x3425 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3426 = arg2[4 * steps + ((cycle - 0) & mask)];
-        assert(x3426 != Fp::invalid());
+        c1_bad |= (x3426 == Fp::invalid());
         // loc("./zirgen/components/plonk.h":230:23)
         auto x3427 = x3387 * x3407;
         // loc("./zirgen/components/plonk.h":230:23)
@@ -7740,7 +7741,7 @@ __device__ void step_compute_accum(
     }
     // loc("zirgen/compiler/edsl/component.cpp":49:15)
     auto x3705 = arg0[17 * steps + ((cycle - 0) & mask)];
-    assert(x3705 != Fp::invalid());
+    c1_bad |= (x3705 == Fp::invalid());
     if (x3705 != 0) {
       {
         // loc("top(recursion::Top)/recursion::WomHeader/mix[0](FpExtReg)/elem[0](Reg)"("./zirgen/components/plonk.h":230:23))
@@ -7785,124 +7786,124 @@ __device__ void step_compute_accum(
         auto x3725 = arg3[9];
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3726 = arg2[0 * steps + ((cycle - 0) & mask)];
-        assert(x3726 != Fp::invalid());
+        c1_bad |= (x3726 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3727 = arg2[1 * steps + ((cycle - 0) & mask)];
-        assert(x3727 != Fp::invalid());
+        c1_bad |= (x3727 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3728 = arg2[15 * steps + ((cycle - 0) & mask)];
-        assert(x3728 != Fp::invalid());
+        c1_bad |= (x3728 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3729 = arg2[16 * steps + ((cycle - 0) & mask)];
-        assert(x3729 != Fp::invalid());
+        c1_bad |= (x3729 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3730 = arg2[17 * steps + ((cycle - 0) & mask)];
-        assert(x3730 != Fp::invalid());
+        c1_bad |= (x3730 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3731 = arg2[18 * steps + ((cycle - 0) & mask)];
-        assert(x3731 != Fp::invalid());
+        c1_bad |= (x3731 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3732 = arg2[19 * steps + ((cycle - 0) & mask)];
-        assert(x3732 != Fp::invalid());
+        c1_bad |= (x3732 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3733 = arg2[2 * steps + ((cycle - 0) & mask)];
-        assert(x3733 != Fp::invalid());
+        c1_bad |= (x3733 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3734 = arg2[20 * steps + ((cycle - 0) & mask)];
-        assert(x3734 != Fp::invalid());
+        c1_bad |= (x3734 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3735 = arg2[21 * steps + ((cycle - 0) & mask)];
-        assert(x3735 != Fp::invalid());
+        c1_bad |= (x3735 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3736 = arg2[22 * steps + ((cycle - 0) & mask)];
-        assert(x3736 != Fp::invalid());
+        c1_bad |= (x3736 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3737 = arg2[23 * steps + ((cycle - 0) & mask)];
-        assert(x3737 != Fp::invalid());
+        c1_bad |= (x3737 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3738 = arg2[24 * steps + ((cycle - 0) & mask)];
-        assert(x3738 != Fp::invalid());
+        c1_bad |= (x3738 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3739 = arg2[25 * steps + ((cycle - 0) & mask)];
-        assert(x3739 != Fp::invalid());
+        c1_bad |= (x3739 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3740 = arg2[26 * steps + ((cycle - 0) & mask)];
-        assert(x3740 != Fp::invalid());
+        c1_bad |= (x3740 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3741 = arg2[27 * steps + ((cycle - 0) & mask)];
-        assert(x3741 != Fp::invalid());
+        c1_bad |= (x3741 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3742 = arg2[28 * steps + ((cycle - 0) & mask)];
-        assert(x3742 != Fp::invalid());
+        c1_bad |= (x3742 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3743 = arg2[29 * steps + ((cycle - 0) & mask)];
-        assert(x3743 != Fp::invalid());
+        c1_bad |= (x3743 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3744 = arg2[3 * steps + ((cycle - 0) & mask)];
-        assert(x3744 != Fp::invalid());
+        c1_bad |= (x3744 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3745 = arg2[30 * steps + ((cycle - 0) & mask)];
-        assert(x3745 != Fp::invalid());
+        c1_bad |= (x3745 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3746 = arg2[31 * steps + ((cycle - 0) & mask)];
-        assert(x3746 != Fp::invalid());
+        c1_bad |= (x3746 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3747 = arg2[32 * steps + ((cycle - 0) & mask)];
-        assert(x3747 != Fp::invalid());
+        c1_bad |= (x3747 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3748 = arg2[33 * steps + ((cycle - 0) & mask)];
-        assert(x3748 != Fp::invalid());
+        c1_bad |= (x3748 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3749 = arg2[34 * steps + ((cycle - 0) & mask)];
-        assert(x3749 != Fp::invalid());
+        c1_bad |= (x3749 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3750 = arg2[35 * steps + ((cycle - 0) & mask)];
-        assert(x3750 != Fp::invalid());
+        c1_bad |= (x3750 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3751 = arg2[36 * steps + ((cycle - 0) & mask)];
-        assert(x3751 != Fp::invalid());
+        c1_bad |= (x3751 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3752 = arg2[37 * steps + ((cycle - 0) & mask)];
-        assert(x3752 != Fp::invalid());
+        c1_bad |= (x3752 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3753 = arg2[38 * steps + ((cycle - 0) & mask)];
-        assert(x3753 != Fp::invalid());
+        c1_bad |= (x3753 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3754 = arg2[39 * steps + ((cycle - 0) & mask)];
-        assert(x3754 != Fp::invalid());
+        c1_bad |= (x3754 == Fp::invalid());
         // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3755 = arg2[4 * steps + ((cycle - 0) & mask)];
-        assert(x3755 != Fp::invalid());
+        c1_bad |= (x3755 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3756 = arg2[40 * steps + ((cycle - 0) & mask)];
-        assert(x3756 != Fp::invalid());
+        c1_bad |= (x3756 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3757 = arg2[41 * steps + ((cycle - 0) & mask)];
-        assert(x3757 != Fp::invalid());
+        c1_bad |= (x3757 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3758 = arg2[42 * steps + ((cycle - 0) & mask)];
-        assert(x3758 != Fp::invalid());
+        c1_bad |= (x3758 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3759 = arg2[43 * steps + ((cycle - 0) & mask)];
-        assert(x3759 != Fp::invalid());
+        c1_bad |= (x3759 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3760 = arg2[44 * steps + ((cycle - 0) & mask)];
-        assert(x3760 != Fp::invalid());
+        c1_bad |= (x3760 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
         auto x3761 = arg2[45 * steps + ((cycle - 0) & mask)];
-        assert(x3761 != Fp::invalid());
+        c1_bad |= (x3761 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3762 = arg2[46 * steps + ((cycle - 0) & mask)];
-        assert(x3762 != Fp::invalid());
+        c1_bad |= (x3762 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3763 = arg2[47 * steps + ((cycle - 0) & mask)];
-        assert(x3763 != Fp::invalid());
+        c1_bad |= (x3763 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3764 = arg2[48 * steps + ((cycle - 0) & mask)];
-        assert(x3764 != Fp::invalid());
+        c1_bad |= (x3764 == Fp::invalid());
         // loc("top(recursion::Top)/mux(Mux)/macro_ops(recursion::MacroOp)/mux(Mux)/set_global(recursion::SetGlobal)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
         auto x3765 = arg2[49 * steps + ((cycle - 0) & mask)];
-        assert(x3765 != Fp::invalid());
+        c1_bad |= (x3765 == Fp::invalid());
         // loc("./zirgen/components/plonk.h":230:23)
         auto x3766 = x3706 * x3726;
         // loc("./zirgen/components/plonk.h":230:23)
@@ -9129,274 +9130,274 @@ __device__ void step_compute_accum(
       auto x4372 = arg3[9];
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4373 = arg2[0 * steps + ((cycle - 0) & mask)];
-      assert(x4373 != Fp::invalid());
+      c1_bad |= (x4373 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4374 = arg2[1 * steps + ((cycle - 0) & mask)];
-      assert(x4374 != Fp::invalid());
+      c1_bad |= (x4374 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4375 = arg2[10 * steps + ((cycle - 0) & mask)];
-      assert(x4375 != Fp::invalid());
+      c1_bad |= (x4375 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4376 = arg2[11 * steps + ((cycle - 0) & mask)];
-      assert(x4376 != Fp::invalid());
+      c1_bad |= (x4376 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4377 = arg2[12 * steps + ((cycle - 0) & mask)];
-      assert(x4377 != Fp::invalid());
+      c1_bad |= (x4377 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4378 = arg2[13 * steps + ((cycle - 0) & mask)];
-      assert(x4378 != Fp::invalid());
+      c1_bad |= (x4378 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4379 = arg2[14 * steps + ((cycle - 0) & mask)];
-      assert(x4379 != Fp::invalid());
+      c1_bad |= (x4379 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4380 = arg2[15 * steps + ((cycle - 0) & mask)];
-      assert(x4380 != Fp::invalid());
+      c1_bad |= (x4380 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4381 = arg2[16 * steps + ((cycle - 0) & mask)];
-      assert(x4381 != Fp::invalid());
+      c1_bad |= (x4381 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4382 = arg2[17 * steps + ((cycle - 0) & mask)];
-      assert(x4382 != Fp::invalid());
+      c1_bad |= (x4382 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4383 = arg2[18 * steps + ((cycle - 0) & mask)];
-      assert(x4383 != Fp::invalid());
+      c1_bad |= (x4383 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4384 = arg2[19 * steps + ((cycle - 0) & mask)];
-      assert(x4384 != Fp::invalid());
+      c1_bad |= (x4384 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4385 = arg2[2 * steps + ((cycle - 0) & mask)];
-      assert(x4385 != Fp::invalid());
+      c1_bad |= (x4385 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4386 = arg2[20 * steps + ((cycle - 0) & mask)];
-      assert(x4386 != Fp::invalid());
+      c1_bad |= (x4386 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4387 = arg2[21 * steps + ((cycle - 0) & mask)];
-      assert(x4387 != Fp::invalid());
+      c1_bad |= (x4387 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4388 = arg2[22 * steps + ((cycle - 0) & mask)];
-      assert(x4388 != Fp::invalid());
+      c1_bad |= (x4388 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4389 = arg2[23 * steps + ((cycle - 0) & mask)];
-      assert(x4389 != Fp::invalid());
+      c1_bad |= (x4389 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4390 = arg2[24 * steps + ((cycle - 0) & mask)];
-      assert(x4390 != Fp::invalid());
+      c1_bad |= (x4390 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4391 = arg2[25 * steps + ((cycle - 0) & mask)];
-      assert(x4391 != Fp::invalid());
+      c1_bad |= (x4391 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4392 = arg2[26 * steps + ((cycle - 0) & mask)];
-      assert(x4392 != Fp::invalid());
+      c1_bad |= (x4392 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4393 = arg2[27 * steps + ((cycle - 0) & mask)];
-      assert(x4393 != Fp::invalid());
+      c1_bad |= (x4393 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4394 = arg2[28 * steps + ((cycle - 0) & mask)];
-      assert(x4394 != Fp::invalid());
+      c1_bad |= (x4394 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4395 = arg2[29 * steps + ((cycle - 0) & mask)];
-      assert(x4395 != Fp::invalid());
+      c1_bad |= (x4395 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4396 = arg2[3 * steps + ((cycle - 0) & mask)];
-      assert(x4396 != Fp::invalid());
+      c1_bad |= (x4396 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4397 = arg2[30 * steps + ((cycle - 0) & mask)];
-      assert(x4397 != Fp::invalid());
+      c1_bad |= (x4397 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4398 = arg2[31 * steps + ((cycle - 0) & mask)];
-      assert(x4398 != Fp::invalid());
+      c1_bad |= (x4398 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4399 = arg2[32 * steps + ((cycle - 0) & mask)];
-      assert(x4399 != Fp::invalid());
+      c1_bad |= (x4399 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4400 = arg2[33 * steps + ((cycle - 0) & mask)];
-      assert(x4400 != Fp::invalid());
+      c1_bad |= (x4400 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4401 = arg2[34 * steps + ((cycle - 0) & mask)];
-      assert(x4401 != Fp::invalid());
+      c1_bad |= (x4401 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4402 = arg2[35 * steps + ((cycle - 0) & mask)];
-      assert(x4402 != Fp::invalid());
+      c1_bad |= (x4402 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4403 = arg2[36 * steps + ((cycle - 0) & mask)];
-      assert(x4403 != Fp::invalid());
+      c1_bad |= (x4403 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4404 = arg2[37 * steps + ((cycle - 0) & mask)];
-      assert(x4404 != Fp::invalid());
+      c1_bad |= (x4404 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4405 = arg2[38 * steps + ((cycle - 0) & mask)];
-      assert(x4405 != Fp::invalid());
+      c1_bad |= (x4405 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4406 = arg2[39 * steps + ((cycle - 0) & mask)];
-      assert(x4406 != Fp::invalid());
+      c1_bad |= (x4406 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4407 = arg2[4 * steps + ((cycle - 0) & mask)];
-      assert(x4407 != Fp::invalid());
+      c1_bad |= (x4407 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4408 = arg2[40 * steps + ((cycle - 0) & mask)];
-      assert(x4408 != Fp::invalid());
+      c1_bad |= (x4408 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4409 = arg2[41 * steps + ((cycle - 0) & mask)];
-      assert(x4409 != Fp::invalid());
+      c1_bad |= (x4409 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4410 = arg2[42 * steps + ((cycle - 0) & mask)];
-      assert(x4410 != Fp::invalid());
+      c1_bad |= (x4410 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4411 = arg2[43 * steps + ((cycle - 0) & mask)];
-      assert(x4411 != Fp::invalid());
+      c1_bad |= (x4411 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4412 = arg2[44 * steps + ((cycle - 0) & mask)];
-      assert(x4412 != Fp::invalid());
+      c1_bad |= (x4412 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4413 = arg2[45 * steps + ((cycle - 0) & mask)];
-      assert(x4413 != Fp::invalid());
+      c1_bad |= (x4413 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4414 = arg2[46 * steps + ((cycle - 0) & mask)];
-      assert(x4414 != Fp::invalid());
+      c1_bad |= (x4414 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4415 = arg2[47 * steps + ((cycle - 0) & mask)];
-      assert(x4415 != Fp::invalid());
+      c1_bad |= (x4415 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4416 = arg2[48 * steps + ((cycle - 0) & mask)];
-      assert(x4416 != Fp::invalid());
+      c1_bad |= (x4416 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4417 = arg2[49 * steps + ((cycle - 0) & mask)];
-      assert(x4417 != Fp::invalid());
+      c1_bad |= (x4417 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4418 = arg2[5 * steps + ((cycle - 0) & mask)];
-      assert(x4418 != Fp::invalid());
+      c1_bad |= (x4418 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4419 = arg2[50 * steps + ((cycle - 0) & mask)];
-      assert(x4419 != Fp::invalid());
+      c1_bad |= (x4419 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4420 = arg2[51 * steps + ((cycle - 0) & mask)];
-      assert(x4420 != Fp::invalid());
+      c1_bad |= (x4420 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4421 = arg2[52 * steps + ((cycle - 0) & mask)];
-      assert(x4421 != Fp::invalid());
+      c1_bad |= (x4421 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4422 = arg2[53 * steps + ((cycle - 0) & mask)];
-      assert(x4422 != Fp::invalid());
+      c1_bad |= (x4422 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4423 = arg2[54 * steps + ((cycle - 0) & mask)];
-      assert(x4423 != Fp::invalid());
+      c1_bad |= (x4423 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4424 = arg2[55 * steps + ((cycle - 0) & mask)];
-      assert(x4424 != Fp::invalid());
+      c1_bad |= (x4424 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4425 = arg2[56 * steps + ((cycle - 0) & mask)];
-      assert(x4425 != Fp::invalid());
+      c1_bad |= (x4425 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4426 = arg2[57 * steps + ((cycle - 0) & mask)];
-      assert(x4426 != Fp::invalid());
+      c1_bad |= (x4426 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4427 = arg2[58 * steps + ((cycle - 0) & mask)];
-      assert(x4427 != Fp::invalid());
+      c1_bad |= (x4427 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4428 = arg2[59 * steps + ((cycle - 0) & mask)];
-      assert(x4428 != Fp::invalid());
+      c1_bad |= (x4428 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4429 = arg2[6 * steps + ((cycle - 0) & mask)];
-      assert(x4429 != Fp::invalid());
+      c1_bad |= (x4429 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4430 = arg2[60 * steps + ((cycle - 0) & mask)];
-      assert(x4430 != Fp::invalid());
+      c1_bad |= (x4430 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4431 = arg2[61 * steps + ((cycle - 0) & mask)];
-      assert(x4431 != Fp::invalid());
+      c1_bad |= (x4431 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4432 = arg2[62 * steps + ((cycle - 0) & mask)];
-      assert(x4432 != Fp::invalid());
+      c1_bad |= (x4432 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4433 = arg2[63 * steps + ((cycle - 0) & mask)];
-      assert(x4433 != Fp::invalid());
+      c1_bad |= (x4433 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4434 = arg2[64 * steps + ((cycle - 0) & mask)];
-      assert(x4434 != Fp::invalid());
+      c1_bad |= (x4434 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4435 = arg2[65 * steps + ((cycle - 0) & mask)];
-      assert(x4435 != Fp::invalid());
+      c1_bad |= (x4435 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4436 = arg2[66 * steps + ((cycle - 0) & mask)];
-      assert(x4436 != Fp::invalid());
+      c1_bad |= (x4436 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4437 = arg2[67 * steps + ((cycle - 0) & mask)];
-      assert(x4437 != Fp::invalid());
+      c1_bad |= (x4437 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4438 = arg2[68 * steps + ((cycle - 0) & mask)];
-      assert(x4438 != Fp::invalid());
+      c1_bad |= (x4438 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4439 = arg2[69 * steps + ((cycle - 0) & mask)];
-      assert(x4439 != Fp::invalid());
+      c1_bad |= (x4439 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4440 = arg2[7 * steps + ((cycle - 0) & mask)];
-      assert(x4440 != Fp::invalid());
+      c1_bad |= (x4440 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4441 = arg2[70 * steps + ((cycle - 0) & mask)];
-      assert(x4441 != Fp::invalid());
+      c1_bad |= (x4441 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4442 = arg2[71 * steps + ((cycle - 0) & mask)];
-      assert(x4442 != Fp::invalid());
+      c1_bad |= (x4442 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4443 = arg2[72 * steps + ((cycle - 0) & mask)];
-      assert(x4443 != Fp::invalid());
+      c1_bad |= (x4443 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4444 = arg2[73 * steps + ((cycle - 0) & mask)];
-      assert(x4444 != Fp::invalid());
+      c1_bad |= (x4444 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4445 = arg2[74 * steps + ((cycle - 0) & mask)];
-      assert(x4445 != Fp::invalid());
+      c1_bad |= (x4445 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4446 = arg2[75 * steps + ((cycle - 0) & mask)];
-      assert(x4446 != Fp::invalid());
+      c1_bad |= (x4446 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4447 = arg2[76 * steps + ((cycle - 0) & mask)];
-      assert(x4447 != Fp::invalid());
+      c1_bad |= (x4447 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4448 = arg2[77 * steps + ((cycle - 0) & mask)];
-      assert(x4448 != Fp::invalid());
+      c1_bad |= (x4448 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4449 = arg2[78 * steps + ((cycle - 0) & mask)];
-      assert(x4449 != Fp::invalid());
+      c1_bad |= (x4449 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4450 = arg2[79 * steps + ((cycle - 0) & mask)];
-      assert(x4450 != Fp::invalid());
+      c1_bad |= (x4450 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4451 = arg2[8 * steps + ((cycle - 0) & mask)];
-      assert(x4451 != Fp::invalid());
+      c1_bad |= (x4451 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4452 = arg2[80 * steps + ((cycle - 0) & mask)];
-      assert(x4452 != Fp::invalid());
+      c1_bad |= (x4452 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4453 = arg2[81 * steps + ((cycle - 0) & mask)];
-      assert(x4453 != Fp::invalid());
+      c1_bad |= (x4453 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4454 = arg2[82 * steps + ((cycle - 0) & mask)];
-      assert(x4454 != Fp::invalid());
+      c1_bad |= (x4454 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4455 = arg2[83 * steps + ((cycle - 0) & mask)];
-      assert(x4455 != Fp::invalid());
+      c1_bad |= (x4455 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4456 = arg2[84 * steps + ((cycle - 0) & mask)];
-      assert(x4456 != Fp::invalid());
+      c1_bad |= (x4456 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x4457 = arg2[85 * steps + ((cycle - 0) & mask)];
-      assert(x4457 != Fp::invalid());
+      c1_bad |= (x4457 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4458 = arg2[86 * steps + ((cycle - 0) & mask)];
-      assert(x4458 != Fp::invalid());
+      c1_bad |= (x4458 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4459 = arg2[87 * steps + ((cycle - 0) & mask)];
-      assert(x4459 != Fp::invalid());
+      c1_bad |= (x4459 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4460 = arg2[88 * steps + ((cycle - 0) & mask)];
-      assert(x4460 != Fp::invalid());
+      c1_bad |= (x4460 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4461 = arg2[89 * steps + ((cycle - 0) & mask)];
-      assert(x4461 != Fp::invalid());
+      c1_bad |= (x4461 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_load(recursion::Poseidon2Load)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x4462 = arg2[9 * steps + ((cycle - 0) & mask)];
-      assert(x4462 != Fp::invalid());
+      c1_bad |= (x4462 == Fp::invalid());
       // loc("./zirgen/components/plonk.h":230:23)
       auto x4463 = x4353 * x4373;
       // loc("./zirgen/components/plonk.h":230:23)
@@ -12074,274 +12075,274 @@ __device__ void step_compute_accum(
       auto x5786 = arg3[9];
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5787 = arg2[0 * steps + ((cycle - 0) & mask)];
-      assert(x5787 != Fp::invalid());
+      c1_bad |= (x5787 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5788 = arg2[1 * steps + ((cycle - 0) & mask)];
-      assert(x5788 != Fp::invalid());
+      c1_bad |= (x5788 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5789 = arg2[10 * steps + ((cycle - 0) & mask)];
-      assert(x5789 != Fp::invalid());
+      c1_bad |= (x5789 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5790 = arg2[11 * steps + ((cycle - 0) & mask)];
-      assert(x5790 != Fp::invalid());
+      c1_bad |= (x5790 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5791 = arg2[12 * steps + ((cycle - 0) & mask)];
-      assert(x5791 != Fp::invalid());
+      c1_bad |= (x5791 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5792 = arg2[13 * steps + ((cycle - 0) & mask)];
-      assert(x5792 != Fp::invalid());
+      c1_bad |= (x5792 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5793 = arg2[14 * steps + ((cycle - 0) & mask)];
-      assert(x5793 != Fp::invalid());
+      c1_bad |= (x5793 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5794 = arg2[15 * steps + ((cycle - 0) & mask)];
-      assert(x5794 != Fp::invalid());
+      c1_bad |= (x5794 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5795 = arg2[16 * steps + ((cycle - 0) & mask)];
-      assert(x5795 != Fp::invalid());
+      c1_bad |= (x5795 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5796 = arg2[17 * steps + ((cycle - 0) & mask)];
-      assert(x5796 != Fp::invalid());
+      c1_bad |= (x5796 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5797 = arg2[18 * steps + ((cycle - 0) & mask)];
-      assert(x5797 != Fp::invalid());
+      c1_bad |= (x5797 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5798 = arg2[19 * steps + ((cycle - 0) & mask)];
-      assert(x5798 != Fp::invalid());
+      c1_bad |= (x5798 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5799 = arg2[2 * steps + ((cycle - 0) & mask)];
-      assert(x5799 != Fp::invalid());
+      c1_bad |= (x5799 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5800 = arg2[20 * steps + ((cycle - 0) & mask)];
-      assert(x5800 != Fp::invalid());
+      c1_bad |= (x5800 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5801 = arg2[21 * steps + ((cycle - 0) & mask)];
-      assert(x5801 != Fp::invalid());
+      c1_bad |= (x5801 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5802 = arg2[22 * steps + ((cycle - 0) & mask)];
-      assert(x5802 != Fp::invalid());
+      c1_bad |= (x5802 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5803 = arg2[23 * steps + ((cycle - 0) & mask)];
-      assert(x5803 != Fp::invalid());
+      c1_bad |= (x5803 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5804 = arg2[24 * steps + ((cycle - 0) & mask)];
-      assert(x5804 != Fp::invalid());
+      c1_bad |= (x5804 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5805 = arg2[25 * steps + ((cycle - 0) & mask)];
-      assert(x5805 != Fp::invalid());
+      c1_bad |= (x5805 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5806 = arg2[26 * steps + ((cycle - 0) & mask)];
-      assert(x5806 != Fp::invalid());
+      c1_bad |= (x5806 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5807 = arg2[27 * steps + ((cycle - 0) & mask)];
-      assert(x5807 != Fp::invalid());
+      c1_bad |= (x5807 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5808 = arg2[28 * steps + ((cycle - 0) & mask)];
-      assert(x5808 != Fp::invalid());
+      c1_bad |= (x5808 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5809 = arg2[29 * steps + ((cycle - 0) & mask)];
-      assert(x5809 != Fp::invalid());
+      c1_bad |= (x5809 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5810 = arg2[3 * steps + ((cycle - 0) & mask)];
-      assert(x5810 != Fp::invalid());
+      c1_bad |= (x5810 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5811 = arg2[30 * steps + ((cycle - 0) & mask)];
-      assert(x5811 != Fp::invalid());
+      c1_bad |= (x5811 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5812 = arg2[31 * steps + ((cycle - 0) & mask)];
-      assert(x5812 != Fp::invalid());
+      c1_bad |= (x5812 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5813 = arg2[32 * steps + ((cycle - 0) & mask)];
-      assert(x5813 != Fp::invalid());
+      c1_bad |= (x5813 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5814 = arg2[33 * steps + ((cycle - 0) & mask)];
-      assert(x5814 != Fp::invalid());
+      c1_bad |= (x5814 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5815 = arg2[34 * steps + ((cycle - 0) & mask)];
-      assert(x5815 != Fp::invalid());
+      c1_bad |= (x5815 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5816 = arg2[35 * steps + ((cycle - 0) & mask)];
-      assert(x5816 != Fp::invalid());
+      c1_bad |= (x5816 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5817 = arg2[36 * steps + ((cycle - 0) & mask)];
-      assert(x5817 != Fp::invalid());
+      c1_bad |= (x5817 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5818 = arg2[37 * steps + ((cycle - 0) & mask)];
-      assert(x5818 != Fp::invalid());
+      c1_bad |= (x5818 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5819 = arg2[38 * steps + ((cycle - 0) & mask)];
-      assert(x5819 != Fp::invalid());
+      c1_bad |= (x5819 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5820 = arg2[39 * steps + ((cycle - 0) & mask)];
-      assert(x5820 != Fp::invalid());
+      c1_bad |= (x5820 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5821 = arg2[4 * steps + ((cycle - 0) & mask)];
-      assert(x5821 != Fp::invalid());
+      c1_bad |= (x5821 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5822 = arg2[40 * steps + ((cycle - 0) & mask)];
-      assert(x5822 != Fp::invalid());
+      c1_bad |= (x5822 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5823 = arg2[41 * steps + ((cycle - 0) & mask)];
-      assert(x5823 != Fp::invalid());
+      c1_bad |= (x5823 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5824 = arg2[42 * steps + ((cycle - 0) & mask)];
-      assert(x5824 != Fp::invalid());
+      c1_bad |= (x5824 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5825 = arg2[43 * steps + ((cycle - 0) & mask)];
-      assert(x5825 != Fp::invalid());
+      c1_bad |= (x5825 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5826 = arg2[44 * steps + ((cycle - 0) & mask)];
-      assert(x5826 != Fp::invalid());
+      c1_bad |= (x5826 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5827 = arg2[45 * steps + ((cycle - 0) & mask)];
-      assert(x5827 != Fp::invalid());
+      c1_bad |= (x5827 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5828 = arg2[46 * steps + ((cycle - 0) & mask)];
-      assert(x5828 != Fp::invalid());
+      c1_bad |= (x5828 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5829 = arg2[47 * steps + ((cycle - 0) & mask)];
-      assert(x5829 != Fp::invalid());
+      c1_bad |= (x5829 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5830 = arg2[48 * steps + ((cycle - 0) & mask)];
-      assert(x5830 != Fp::invalid());
+      c1_bad |= (x5830 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5831 = arg2[49 * steps + ((cycle - 0) & mask)];
-      assert(x5831 != Fp::invalid());
+      c1_bad |= (x5831 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5832 = arg2[5 * steps + ((cycle - 0) & mask)];
-      assert(x5832 != Fp::invalid());
+      c1_bad |= (x5832 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5833 = arg2[50 * steps + ((cycle - 0) & mask)];
-      assert(x5833 != Fp::invalid());
+      c1_bad |= (x5833 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5834 = arg2[51 * steps + ((cycle - 0) & mask)];
-      assert(x5834 != Fp::invalid());
+      c1_bad |= (x5834 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5835 = arg2[52 * steps + ((cycle - 0) & mask)];
-      assert(x5835 != Fp::invalid());
+      c1_bad |= (x5835 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5836 = arg2[53 * steps + ((cycle - 0) & mask)];
-      assert(x5836 != Fp::invalid());
+      c1_bad |= (x5836 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5837 = arg2[54 * steps + ((cycle - 0) & mask)];
-      assert(x5837 != Fp::invalid());
+      c1_bad |= (x5837 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5838 = arg2[55 * steps + ((cycle - 0) & mask)];
-      assert(x5838 != Fp::invalid());
+      c1_bad |= (x5838 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5839 = arg2[56 * steps + ((cycle - 0) & mask)];
-      assert(x5839 != Fp::invalid());
+      c1_bad |= (x5839 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5840 = arg2[57 * steps + ((cycle - 0) & mask)];
-      assert(x5840 != Fp::invalid());
+      c1_bad |= (x5840 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5841 = arg2[58 * steps + ((cycle - 0) & mask)];
-      assert(x5841 != Fp::invalid());
+      c1_bad |= (x5841 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5842 = arg2[59 * steps + ((cycle - 0) & mask)];
-      assert(x5842 != Fp::invalid());
+      c1_bad |= (x5842 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5843 = arg2[6 * steps + ((cycle - 0) & mask)];
-      assert(x5843 != Fp::invalid());
+      c1_bad |= (x5843 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5844 = arg2[60 * steps + ((cycle - 0) & mask)];
-      assert(x5844 != Fp::invalid());
+      c1_bad |= (x5844 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5845 = arg2[61 * steps + ((cycle - 0) & mask)];
-      assert(x5845 != Fp::invalid());
+      c1_bad |= (x5845 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5846 = arg2[62 * steps + ((cycle - 0) & mask)];
-      assert(x5846 != Fp::invalid());
+      c1_bad |= (x5846 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5847 = arg2[63 * steps + ((cycle - 0) & mask)];
-      assert(x5847 != Fp::invalid());
+      c1_bad |= (x5847 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5848 = arg2[64 * steps + ((cycle - 0) & mask)];
-      assert(x5848 != Fp::invalid());
+      c1_bad |= (x5848 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5849 = arg2[65 * steps + ((cycle - 0) & mask)];
-      assert(x5849 != Fp::invalid());
+      c1_bad |= (x5849 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5850 = arg2[66 * steps + ((cycle - 0) & mask)];
-      assert(x5850 != Fp::invalid());
+      c1_bad |= (x5850 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5851 = arg2[67 * steps + ((cycle - 0) & mask)];
-      assert(x5851 != Fp::invalid());
+      c1_bad |= (x5851 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5852 = arg2[68 * steps + ((cycle - 0) & mask)];
-      assert(x5852 != Fp::invalid());
+      c1_bad |= (x5852 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5853 = arg2[69 * steps + ((cycle - 0) & mask)];
-      assert(x5853 != Fp::invalid());
+      c1_bad |= (x5853 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5854 = arg2[7 * steps + ((cycle - 0) & mask)];
-      assert(x5854 != Fp::invalid());
+      c1_bad |= (x5854 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5855 = arg2[70 * steps + ((cycle - 0) & mask)];
-      assert(x5855 != Fp::invalid());
+      c1_bad |= (x5855 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5856 = arg2[71 * steps + ((cycle - 0) & mask)];
-      assert(x5856 != Fp::invalid());
+      c1_bad |= (x5856 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5857 = arg2[72 * steps + ((cycle - 0) & mask)];
-      assert(x5857 != Fp::invalid());
+      c1_bad |= (x5857 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5858 = arg2[73 * steps + ((cycle - 0) & mask)];
-      assert(x5858 != Fp::invalid());
+      c1_bad |= (x5858 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5859 = arg2[74 * steps + ((cycle - 0) & mask)];
-      assert(x5859 != Fp::invalid());
+      c1_bad |= (x5859 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5860 = arg2[75 * steps + ((cycle - 0) & mask)];
-      assert(x5860 != Fp::invalid());
+      c1_bad |= (x5860 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5861 = arg2[76 * steps + ((cycle - 0) & mask)];
-      assert(x5861 != Fp::invalid());
+      c1_bad |= (x5861 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5862 = arg2[77 * steps + ((cycle - 0) & mask)];
-      assert(x5862 != Fp::invalid());
+      c1_bad |= (x5862 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5863 = arg2[78 * steps + ((cycle - 0) & mask)];
-      assert(x5863 != Fp::invalid());
+      c1_bad |= (x5863 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5864 = arg2[79 * steps + ((cycle - 0) & mask)];
-      assert(x5864 != Fp::invalid());
+      c1_bad |= (x5864 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5865 = arg2[8 * steps + ((cycle - 0) & mask)];
-      assert(x5865 != Fp::invalid());
+      c1_bad |= (x5865 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5866 = arg2[80 * steps + ((cycle - 0) & mask)];
-      assert(x5866 != Fp::invalid());
+      c1_bad |= (x5866 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5867 = arg2[81 * steps + ((cycle - 0) & mask)];
-      assert(x5867 != Fp::invalid());
+      c1_bad |= (x5867 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5868 = arg2[82 * steps + ((cycle - 0) & mask)];
-      assert(x5868 != Fp::invalid());
+      c1_bad |= (x5868 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5869 = arg2[83 * steps + ((cycle - 0) & mask)];
-      assert(x5869 != Fp::invalid());
+      c1_bad |= (x5869 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5870 = arg2[84 * steps + ((cycle - 0) & mask)];
-      assert(x5870 != Fp::invalid());
+      c1_bad |= (x5870 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x5871 = arg2[85 * steps + ((cycle - 0) & mask)];
-      assert(x5871 != Fp::invalid());
+      c1_bad |= (x5871 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5872 = arg2[86 * steps + ((cycle - 0) & mask)];
-      assert(x5872 != Fp::invalid());
+      c1_bad |= (x5872 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5873 = arg2[87 * steps + ((cycle - 0) & mask)];
-      assert(x5873 != Fp::invalid());
+      c1_bad |= (x5873 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5874 = arg2[88 * steps + ((cycle - 0) & mask)];
-      assert(x5874 != Fp::invalid());
+      c1_bad |= (x5874 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5875 = arg2[89 * steps + ((cycle - 0) & mask)];
-      assert(x5875 != Fp::invalid());
+      c1_bad |= (x5875 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/poseidon2_store(recursion::Poseidon2Store)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x5876 = arg2[9 * steps + ((cycle - 0) & mask)];
-      assert(x5876 != Fp::invalid());
+      c1_bad |= (x5876 == Fp::invalid());
       // loc("./zirgen/components/plonk.h":230:23)
       auto x5877 = x5767 * x5787;
       // loc("./zirgen/components/plonk.h":230:23)
@@ -15001,64 +15002,64 @@ __device__ void step_compute_accum(
       auto x7200 = arg3[9];
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x7201 = arg2[0 * steps + ((cycle - 0) & mask)];
-      assert(x7201 != Fp::invalid());
+      c1_bad |= (x7201 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7202 = arg2[1 * steps + ((cycle - 0) & mask)];
-      assert(x7202 != Fp::invalid());
+      c1_bad |= (x7202 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x7203 = arg2[10 * steps + ((cycle - 0) & mask)];
-      assert(x7203 != Fp::invalid());
+      c1_bad |= (x7203 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7204 = arg2[11 * steps + ((cycle - 0) & mask)];
-      assert(x7204 != Fp::invalid());
+      c1_bad |= (x7204 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7205 = arg2[12 * steps + ((cycle - 0) & mask)];
-      assert(x7205 != Fp::invalid());
+      c1_bad |= (x7205 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7206 = arg2[13 * steps + ((cycle - 0) & mask)];
-      assert(x7206 != Fp::invalid());
+      c1_bad |= (x7206 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7207 = arg2[14 * steps + ((cycle - 0) & mask)];
-      assert(x7207 != Fp::invalid());
+      c1_bad |= (x7207 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x7208 = arg2[15 * steps + ((cycle - 0) & mask)];
-      assert(x7208 != Fp::invalid());
+      c1_bad |= (x7208 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7209 = arg2[16 * steps + ((cycle - 0) & mask)];
-      assert(x7209 != Fp::invalid());
+      c1_bad |= (x7209 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7210 = arg2[17 * steps + ((cycle - 0) & mask)];
-      assert(x7210 != Fp::invalid());
+      c1_bad |= (x7210 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7211 = arg2[18 * steps + ((cycle - 0) & mask)];
-      assert(x7211 != Fp::invalid());
+      c1_bad |= (x7211 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7212 = arg2[19 * steps + ((cycle - 0) & mask)];
-      assert(x7212 != Fp::invalid());
+      c1_bad |= (x7212 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7213 = arg2[2 * steps + ((cycle - 0) & mask)];
-      assert(x7213 != Fp::invalid());
+      c1_bad |= (x7213 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7214 = arg2[3 * steps + ((cycle - 0) & mask)];
-      assert(x7214 != Fp::invalid());
+      c1_bad |= (x7214 == Fp::invalid());
       // loc("top(recursion::Top)/recursion::WomHeader/element(recursion::impl::WomPlonkElement)/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7215 = arg2[4 * steps + ((cycle - 0) & mask)];
-      assert(x7215 != Fp::invalid());
+      c1_bad |= (x7215 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/addr(Reg)"("zirgen/circuit/recursion/wom.cpp":32:27))
       auto x7216 = arg2[5 * steps + ((cycle - 0) & mask)];
-      assert(x7216 != Fp::invalid());
+      c1_bad |= (x7216 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[0](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7217 = arg2[6 * steps + ((cycle - 0) & mask)];
-      assert(x7217 != Fp::invalid());
+      c1_bad |= (x7217 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[1](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7218 = arg2[7 * steps + ((cycle - 0) & mask)];
-      assert(x7218 != Fp::invalid());
+      c1_bad |= (x7218 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[2](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7219 = arg2[8 * steps + ((cycle - 0) & mask)];
-      assert(x7219 != Fp::invalid());
+      c1_bad |= (x7219 == Fp::invalid());
       // loc("top(recursion::Top)/mux(Mux)/checked_bytes(recursion::CheckedBytes)/wom_body(recursion::WomBody)/plonk_body(PlonkBody)/recursion::impl::WomPlonkElement/data[3](Reg)"("zirgen/circuit/recursion/wom.cpp":54:14))
       auto x7220 = arg2[9 * steps + ((cycle - 0) & mask)];
-      assert(x7220 != Fp::invalid());
+      c1_bad |= (x7220 == Fp::invalid());
       // loc("./zirgen/components/plonk.h":230:23)
       auto x7221 = x7181 * x7201;
       // loc("./zirgen/components/plonk.h":230:23)
@@ -15622,4 +15623,5 @@ __device__ void step_compute_accum(
       extern_plonkWriteAccum_wom(ctx, cycle, "wom", extern_args, extern_outs);
     }
   }
+  if (c1_bad) __trap();
 }

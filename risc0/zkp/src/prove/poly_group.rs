@@ -204,14 +204,47 @@ impl<H: Hal> PolyGroup<H> {
         size: usize,
         name: &'static str,
     ) -> Self {
+        Self::new_impl(hal, coeffs, None, count, size, name)
+    }
+
+    /// Build from coefficients (natural order) and their already-computed LDE, as
+    /// [`Hal::commit_coeffs_lde`] produces them.
+    pub fn new_with_evaluated(
+        hal: &H,
+        coeffs: H::Buffer<H::Elem>,
+        evaluated: H::Buffer<H::Elem>,
+        count: usize,
+        size: usize,
+        name: &'static str,
+    ) -> Self {
+        Self::new_impl(hal, coeffs, Some(evaluated), count, size, name)
+    }
+
+    fn new_impl(
+        hal: &H,
+        coeffs: H::Buffer<H::Elem>,
+        pre_evaluated: Option<H::Buffer<H::Elem>>,
+        count: usize,
+        size: usize,
+        name: &'static str,
+    ) -> Self {
         scope_with!("poly_group({})", name);
         assert_eq!(coeffs.size(), count * size);
         let domain = size * INV_RATE;
-        let evaluated = hal.alloc_elem("evaluated", count * domain);
         let t0 = std::time::Instant::now();
-        hal.batch_expand_into_evaluate_ntt(&evaluated, &coeffs, count, log2_ceil(INV_RATE));
+        let evaluated = match pre_evaluated {
+            Some(e) => {
+                assert_eq!(e.size(), count * domain);
+                e
+            }
+            None => {
+                let evaluated = hal.alloc_elem("evaluated", count * domain);
+                hal.batch_expand_into_evaluate_ntt(&evaluated, &coeffs, count, log2_ceil(INV_RATE));
+                hal.batch_bit_reverse(&coeffs, count);
+                evaluated
+            }
+        };
         let t_ntt = t0.elapsed();
-        hal.batch_bit_reverse(&coeffs, count);
         let t_bitrev = t0.elapsed();
 
         // Spill coeffs to host BEFORE merkle alloc if large enough. At po2=22

@@ -39,6 +39,10 @@ impl<T> DevicePointer<T> {
 pub use sppark::Error as SpparkError;
 
 extern "C" {
+    /// Registers the function that raw device allocations in the kernel libraries call when
+    /// cudaMalloc runs out of memory, before retrying once (see `device_alloc.h`).
+    pub fn risc0_zkp_cuda_set_oom_hook(hook: extern "C" fn());
+
     pub fn sppark_init() -> sppark::Error;
     pub fn sppark_poseidon2_init() -> sppark::Error;
 
@@ -71,6 +75,27 @@ extern "C" {
     pub fn sppark_batch_iNTT_zk_shift(
         d_inout: DevicePointer<u8>,
         lg_domain_size: u32,
+        poly_count: u32,
+    ) -> sppark::Error;
+
+    pub fn sppark_batch_iNTT_zk_shift_fused(
+        d_inout: DevicePointer<u8>,
+        lg_domain_size: u32,
+        poly_count: u32,
+    ) -> sppark::Error;
+
+    pub fn sppark_batch_bit_reverse_tiled(
+        d_inout: DevicePointer<u8>,
+        lg_domain_size: u32,
+        poly_count: u32,
+    ) -> sppark::Error;
+
+    pub fn sppark_commit_coeffs_lde(
+        d_coeffs: DevicePointer<u8>,
+        d_evaluated: DevicePointer<u8>,
+        d_witness: DevicePointer<u8>,
+        lg_domain_size: u32,
+        lg_blowup: u32,
         poly_count: u32,
     ) -> sppark::Error;
 

@@ -238,12 +238,34 @@ impl GuestBuilder for GuestListEntry {
     }
 }
 
+/// `fs::canonicalize`, except that on Windows a local disk path comes back in its ordinary form
+/// (`C:\...`), not the verbatim one canonicalize gives (`\\?\C:\...`). Handed a verbatim manifest
+/// path, cargo can't match it with its workspace's members, spelled `C:\...`, and `cargo metadata`
+/// fails for a package inside a workspace ("current package believes it's in a workspace when
+/// it's not"). Other verbatim paths (UNC, device) are returned as canonicalize gives them.
+fn canonicalize_manifest_dir(dir: &Path) -> std::io::Result<PathBuf> {
+    let dir = fs::canonicalize(dir)?;
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = dir.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            if let Prefix::VerbatimDisk(drive) = prefix.kind() {
+                let mut plain = PathBuf::from(format!("{}:\\", drive as char));
+                plain.extend(components.filter(|c| !matches!(c, Component::RootDir)));
+                return Ok(plain);
+            }
+        }
+    }
+    Ok(dir)
+}
+
 /// Returns the given cargo Package from the metadata in the Cargo.toml manifest
 /// within the provided `manifest_dir`.
 pub fn get_package(manifest_dir: impl AsRef<Path>) -> Package {
     // Canonicalize the manifest directory specified by the user.
-    let manifest_dir =
-        fs::canonicalize(manifest_dir.as_ref()).expect("could not canonicalize manifest path");
+    let manifest_dir = canonicalize_manifest_dir(manifest_dir.as_ref())
+        .expect("could not canonicalize manifest path");
     let manifest_path = manifest_dir.join("Cargo.toml");
     let manifest_meta = MetadataCommand::new()
         .manifest_path(&manifest_path)
@@ -919,5 +941,28 @@ mod tests {
         ]
         .join("\x1f");
         assert!(encoded.contains(&expected));
+    }
+
+    // A member only as a path dependency of one (risc0-circuit-keccak): on Windows, given the
+    // verbatim (`\\?\C:\...`) path that `fs::canonicalize` returns, `cargo metadata` failed to
+    // match it with that dependency ("current package believes it's in a workspace when it's
+    // not").
+    #[test]
+    fn gets_an_implicit_workspace_members_package() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../circuit/keccak/methods");
+        let pkg = get_package(dir);
+        assert_eq!(pkg.name, "risc0-circuit-keccak-methods");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_manifest_dir_is_not_verbatim_on_a_local_disk() {
+        let dir = canonicalize_manifest_dir(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert!(!dir.to_string_lossy().starts_with(r"\\?\"), "{dir:?}");
+        assert!(dir.is_absolute(), "{dir:?}");
+        assert_eq!(
+            fs::canonicalize(&dir).unwrap(),
+            fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap()
+        );
     }
 }

@@ -17,8 +17,8 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use risc0_circuit_recursion_sys::{
     risc0_circuit_recursion_cuda_accum, risc0_circuit_recursion_cuda_eval_check,
-    risc0_circuit_recursion_cuda_witgen, RawAccumBuffers, RawExecBuffers, RawPreflightTrace,
-    StepMode,
+    risc0_circuit_recursion_cuda_witgen, risc0_circuit_recursion_cuda_witgen_chains,
+    RawAccumBuffers, RawExecBuffers, RawHostChains, RawPreflightTrace, StepMode,
 };
 use risc0_sys::ffi_wrap;
 use risc0_zkp::{
@@ -54,6 +54,7 @@ struct CudaCircuitHal<CH: CudaHash> {
 
 impl<CH: CudaHash> CudaCircuitHal<CH> {
     pub fn new(_hal: Arc<CudaHal<CH>>) -> Self {
+        risc0_zkp::hal::cuda::register_release_hook(super::super::pinned::release);
         Self { _hal }
     }
 }
@@ -78,6 +79,56 @@ impl<CH: CudaHash> CircuitWitnessGenerator<CudaHal<CH>> for CudaCircuitHal<CH> {
         };
         ffi_wrap(|| unsafe {
             risc0_circuit_recursion_cuda_witgen(mode, &buffers, preflight, total_cycles)
+        })
+    }
+
+    fn generate_witness_with_chains(
+        &self,
+        mode: StepMode,
+        total_cycles: u32,
+        preflight: &RawPreflightTrace,
+        host_chains: Option<&crate::prove::witgen::HostChains>,
+        ctrl: &CudaBuffer<BabyBearElem>,
+        data: &CudaBuffer<BabyBearElem>,
+        global: &CudaBuffer<BabyBearElem>,
+    ) -> Result<()> {
+        let Some(hc) = host_chains else {
+            return self.generate_witness(mode, total_cycles, preflight, ctrl, data, global);
+        };
+        let ctrl = ctrl.as_device_ptr();
+        let data = data.as_device_ptr();
+        let global = global.as_device_ptr();
+        let buffers = RawExecBuffers {
+            ctrl: ctrl.as_ptr() as *const BabyBearElem,
+            data: data.as_ptr() as *const BabyBearElem,
+            global: global.as_ptr() as *const BabyBearElem,
+        };
+        let p = hc.pinned.unwrap_or([
+            hc.heads.as_ptr() as usize,
+            hc.cycles.as_ptr() as usize,
+            hc.rows.as_ptr() as usize,
+            hc.wom_idx.as_ptr() as usize,
+            hc.wom_rows.as_ptr() as usize,
+        ]);
+        let raw = RawHostChains {
+            heads: p[0] as *const u32,
+            num_heads: hc.heads.len() as u32,
+            cycles: p[1] as *const u32,
+            rows: p[2] as *const u32,
+            wom_idx: p[3] as *const u32,
+            wom_rows: p[4] as *const u32,
+            num_rows: hc.cycles.len() as u32,
+            data_cols: (hc.rows.len() / hc.cycles.len().max(1)) as u32,
+        };
+        // `hc` outlives the call, which synchronizes before returning.
+        ffi_wrap(|| unsafe {
+            risc0_circuit_recursion_cuda_witgen_chains(
+                mode,
+                &buffers,
+                preflight,
+                total_cycles,
+                &raw,
+            )
         })
     }
 }

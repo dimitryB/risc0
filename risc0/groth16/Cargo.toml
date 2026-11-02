@@ -47,10 +47,12 @@ all-features = true
 [features]
 cuda = [
   "dep:circom-witnesscalc",
+  "dep:rayon",
   "dep:risc0-groth16-sys",
   "dep:wtns-file",
   "prove",
   "risc0-groth16-sys/cuda",
+  "risc0-zkp/cuda",
 ]
 rocm = [
   "dep:circom-witnesscalc",
@@ -62,9 +64,17 @@ rocm = [
   "risc0-zkp/rocm",
 ]
 default = ["std"]
-# Intel builds: in-process witness generation + pre-started Docker prover
-# (see src/prove/fast.rs).
-intel = ["dep:circom-witnesscalc", "dep:sha2", "dep:wtns-file", "prove"]
+# Intel builds: the SYCL GPU prover (src/prove/intel.rs) with in-process witness generation
+# (src/prove/fast.rs); RISC0_GROTH16_INTEL_PROVER=docker selects the pre-started Docker prover.
+intel = [
+  "dep:circom-witnesscalc",
+  "dep:rayon",
+  "dep:risc0-groth16-sys",
+  "dep:sha2",
+  "dep:wtns-file",
+  "prove",
+  "risc0-groth16-sys/intel",
+]
 native-groth16 = ["dep:circom-witnesscalc", "dep:sha2", "dep:wtns-file", "dep:rayon", "prove"]
 prove = [
   "dep:cfg-if",

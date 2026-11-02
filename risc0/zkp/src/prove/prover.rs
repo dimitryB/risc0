@@ -20,9 +20,9 @@ use risc0_core::{
 };
 
 use crate::{
-    core::{digest::Digest, poly::poly_interpolate},
+    core::{digest::Digest, log2_ceil, poly::poly_interpolate},
     hal::{Buffer, CircuitHal, Hal},
-    prove::{fri::fri_prove, poly_group::PolyGroup, write_iop::WriteIOP},
+    prove::{fri::fri_prove, merkle::MerkleTreeProver, poly_group::PolyGroup, write_iop::WriteIOP},
     taps::TapSet,
     INV_RATE,
 };
@@ -118,14 +118,28 @@ impl<'a, H: Hal> Prover<'a, H> {
             "Attempted to commit group {} more than once",
             self.taps.group_name(tap_group_index)
         );
-        let coeffs = make_coeffs(self.hal, witness, group_size);
-        let group_ref = self.groups[tap_group_index].insert(PolyGroup::new(
-            self.hal,
-            coeffs,
-            group_size,
-            self.cycles,
-            witness.name(),
-        ));
+        let fused = !cfg!(feature = "circuit_debug")
+            && self.hal.has_commit_coeffs_lde(log2_ceil(self.cycles));
+        let group = if fused {
+            let coeffs = self.hal.alloc_elem("coeffs", witness.size());
+            let evaluated = self
+                .hal
+                .alloc_elem("evaluated", group_size * self.cycles * INV_RATE);
+            self.hal
+                .commit_coeffs_lde(&coeffs, &evaluated, witness, group_size);
+            PolyGroup::new_with_evaluated(
+                self.hal,
+                coeffs,
+                evaluated,
+                group_size,
+                self.cycles,
+                witness.name(),
+            )
+        } else {
+            let coeffs = make_coeffs(self.hal, witness, group_size);
+            PolyGroup::new(self.hal, coeffs, group_size, self.cycles, witness.name())
+        };
+        let group_ref = self.groups[tap_group_index].insert(group);
 
         group_ref.merkle.commit(&mut self.iop);
 
@@ -424,6 +438,36 @@ impl<H: Hal> DeferredFinalize<H> {
         });
         let _eu_t_be = _eu_t0.elapsed();
 
+        // The check group's evaluation at z^EXT_SIZE does not depend on the interpolation below:
+        // queue it first (async on GPU HALs), so it runs while the host interpolates (ROCm builds;
+        // RISC0_EVAL_U_EARLY=0 keeps the old order).
+        let z_pow = z.pow(ext_size);
+        let check_eval = |hal: &H| {
+            let which = Vec::from_iter(0u32..H::CHECK_SIZE as u32);
+            let xs = vec![z_pow; H::CHECK_SIZE];
+            let out = hal.alloc_extelem("out", H::CHECK_SIZE);
+            let which = hal.copy_from_u32("which", which.as_slice());
+            let xs = hal.copy_from_extelem("xs", xs.as_slice());
+            hal.batch_evaluate_any(
+                check_group.coeffs.as_ref().expect("coeffs must be restored"),
+                H::CHECK_SIZE,
+                &which,
+                &xs,
+                &out,
+            );
+            out
+        };
+        static EVAL_U_EARLY: LazyLock<bool> = LazyLock::new(|| {
+            cfg!(feature = "rocm")
+                && !matches!(std::env::var("RISC0_EVAL_U_EARLY").as_deref(), Ok(v) if v.starts_with('0'))
+        });
+        let early_check = EVAL_U_EARLY.then(|| check_eval(hal));
+        // The FRI mixing buffer's zero fill does not depend on the mix either: queue it now too.
+        let combo_count = self.taps.combos_size();
+        let early_combos = EVAL_U_EARLY.then(|| {
+            hal.alloc_extelem_zeroed("combos", self.cycles * (combo_count + 1))
+        });
+
         // Now, convert the values to coefficients via interpolation
         let mut coeff_u = vec![H::ExtElem::ZERO; eval_u.len()];
         let _eu_t_interp_start = std::time::Instant::now();
@@ -442,26 +486,17 @@ impl<H: Hal> DeferredFinalize<H> {
         let _eu_t_interp = _eu_t_interp_start.elapsed();
 
         // Add in the coeffs of the check polynomials.
-        let z_pow = z.pow(ext_size);
         let _eu_t_misc_start = std::time::Instant::now();
         let mut _eu_t_be2 = std::time::Duration::ZERO;
         let mut _eu_t_hash = std::time::Duration::ZERO;
         let mut _eu_t_iop_w = std::time::Duration::ZERO;
         let mut _eu_t_iop_c = std::time::Duration::ZERO;
         scope!("misc", {
-            let which = Vec::from_iter(0u32..H::CHECK_SIZE as u32);
-            let xs = vec![z_pow; H::CHECK_SIZE];
-            let out = hal.alloc_extelem("out", H::CHECK_SIZE);
-            let which = hal.copy_from_u32("which", which.as_slice());
-            let xs = hal.copy_from_extelem("xs", xs.as_slice());
             let _bt = std::time::Instant::now();
-            hal.batch_evaluate_any(
-                check_group.coeffs.as_ref().expect("coeffs must be restored"),
-                H::CHECK_SIZE,
-                &which,
-                &xs,
-                &out,
-            );
+            let out = match early_check {
+                Some(out) => out,
+                None => check_eval(hal),
+            };
             out.view(|view| {
                 coeff_u.extend(view);
             });
@@ -503,10 +538,12 @@ impl<H: Hal> DeferredFinalize<H> {
 
         // Do the coefficient mixing
         // Begin by making a zeroed output buffer
-        let combo_count = self.taps.combos_size();
         let combos = scope!(
             "alloc(combos)",
-            hal.alloc_extelem_zeroed("combos", self.cycles * (combo_count + 1))
+            match early_combos {
+                Some(combos) => combos,
+                None => hal.alloc_extelem_zeroed("combos", self.cycles * (combo_count + 1)),
+            }
         );
         scope!("mix_poly_coeffs", {
             let mut cur_mix = H::ExtElem::ONE;
@@ -649,11 +686,14 @@ impl<H: Hal> DeferredFinalize<H> {
                 &mut self.iop,
                 &final_poly_coeffs,
                 |indices: &[usize]| -> Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> {
-                    let mut trees: Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> = Vec::new();
-                    for pg in self.groups.iter() {
-                        trees.push(pg.as_ref().unwrap().merkle.batch_prove(hal, indices));
-                    }
-                    trees.push(check_group.merkle.batch_prove(hal, indices));
+                    let mut jobs: Vec<(&MerkleTreeProver<H>, &[usize])> = self
+                        .groups
+                        .iter()
+                        .map(|pg| (&pg.as_ref().unwrap().merkle, indices))
+                        .collect();
+                    jobs.push((&check_group.merkle, indices));
+                    let mut trees: Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> =
+                        MerkleTreeProver::batch_prove_many(hal, &jobs);
                     let n = indices.len();
                     let num_trees = trees.len();
                     let mut result: Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> = Vec::with_capacity(n);

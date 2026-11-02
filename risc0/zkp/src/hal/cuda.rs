@@ -53,7 +53,29 @@ struct BufferPool {
     total_cached: usize,
 }
 
-const BUFFER_POOL_MAX_BYTES: usize = 16 << 30; // 16 GB
+const BUFFER_POOL_MAX_BYTES: usize = 16 << 30; // 16 GB (floor of the cap)
+/// Headroom the pool cap leaves below the device's total memory.
+const BUFFER_POOL_HEADROOM: usize = 8 << 30; // 8 GB
+
+/// Cap on the bytes of large buffers the pool caches: max(16 GB, device total - 8 GB), i.e.
+/// (of device 0, the HAL's only device: see `CudaHal::new_from_hash`; hosts with several GPUs run a
+/// process per GPU with `CUDA_VISIBLE_DEVICES`, as r0vm does),
+/// 24 GB on a 32 GB card, where the fixed 16 GB cap freed (and later re-allocated with a cold
+/// cuMemAlloc) part of a po2=21 segment's working set every segment. RISC0_CUDA_POOL_MAX_GB
+/// overrides it (16 = the previous behavior). Evaluated on the first push, when a context is
+/// current.
+static POOL_MAX: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    if let Some(g) = std::env::var("RISC0_CUDA_POOL_MAX_GB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        return g << 30;
+    }
+    match cust::memory::mem_get_info() {
+        Ok((_free, total)) => BUFFER_POOL_MAX_BYTES.max(total.saturating_sub(BUFFER_POOL_HEADROOM)),
+        Err(_) => BUFFER_POOL_MAX_BYTES,
+    }
+});
 const BUFFER_POOL_SMALL_THRESHOLD: usize = 64 << 10; // 64 KB - always pool small buffers
 
 impl BufferPool {
@@ -77,7 +99,7 @@ impl BufferPool {
     fn push(&mut self, size: usize, buf: DeviceBuffer<u8>) {
         // Always pool small buffers (cuMemFree overhead > storage cost).
         // Only enforce cap for large buffers.
-        if size >= BUFFER_POOL_SMALL_THRESHOLD && self.total_cached + size > BUFFER_POOL_MAX_BYTES {
+        if size >= BUFFER_POOL_SMALL_THRESHOLD && self.total_cached + size > *POOL_MAX {
             drop(buf);
             return;
         }
@@ -123,6 +145,65 @@ fn trim_cuda_mempool() {
     }
 }
 
+/// Called by raw device allocations in the kernel libraries (`risc0_cuda_malloc` in
+/// `device_alloc.h`: nttq scratch, the rv32im preflight slots, sort keys) when cudaMalloc fails:
+/// releases this thread's cached buffers and trims the mempool, so the allocation can be retried,
+/// as `RawBuffer::new` does for the HAL's own allocations. Those callers run on the proving
+/// thread, which owns the pool that holds the memory.
+extern "C" fn drain_pool_on_oom() {
+    let _ = std::panic::catch_unwind(|| {
+        run_release_hooks(true);
+        let released = BUFFER_POOL
+            .try_with(|pool| {
+                pool.try_borrow_mut()
+                    .map(|mut pool| {
+                        let cached = pool.total_cached;
+                        pool.drain();
+                        cached
+                    })
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        trim_cuda_mempool();
+        tracing::debug!(
+            "raw device allocation failed: released {:.2} GiB of cached buffers, retrying",
+            released as f64 / (1u64 << 30) as f64
+        );
+    });
+}
+
+/// Caches kept outside this HAL's pool by the circuit crates: device scratch of their kernel
+/// libraries, and host staging pools (pinned buffers, recycled trace vectors).
+static RELEASE_HOOKS: std::sync::Mutex<Vec<fn(bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// Register `hook` (once; repeated registrations of the same function are ignored) to release a
+/// cache that `clear_buffer_pool` cannot see. It is called with `device_only = false` by
+/// [clear_buffer_pool] (free everything that can be rebuilt: device scratch not in use, host
+/// pools), and with `device_only = true` when a raw device allocation fails on the proving thread
+/// (free device memory not in use right now). It must not block on locks its own code may hold
+/// around a device allocation (use `try_lock`).
+pub fn register_release_hook(hook: fn(bool)) {
+    let mut hooks = RELEASE_HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+    if !hooks.iter().any(|h| std::ptr::fn_addr_eq(*h, hook)) {
+        hooks.push(hook);
+    }
+}
+
+fn run_release_hooks(device_only: bool) {
+    let hooks = RELEASE_HOOKS
+        .try_lock()
+        .map(|h| h.clone())
+        .unwrap_or_default();
+    for hook in hooks {
+        hook(device_only);
+    }
+}
+
+fn register_oom_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe { risc0_sys::cuda::risc0_zkp_cuda_set_oom_hook(drain_pool_on_oom) });
+}
+
 /// Release every device buffer this thread's `BUFFER_POOL` is caching, and trim the CUDA
 /// stream-ordered mempool back to the driver. The CUDA counterpart of `hal::hip::clear_buffer_pool`.
 ///
@@ -136,6 +217,7 @@ fn trim_cuda_mempool() {
 ///
 /// Thread-local, like the pool: it releases only what the CALLING thread cached.
 pub fn clear_buffer_pool() {
+    run_release_hooks(false);
     let released = BUFFER_POOL.with(|pool| {
         let mut pool = pool.borrow_mut();
         let cached = pool.total_cached;
@@ -164,6 +246,14 @@ pub fn singleton() -> &'static ReentrantMutex<()> {
 /// for the call. Reentrant, so a call nested in another on the same thread goes straight through.
 pub fn exclusive() -> ReentrantMutexGuard<'static, ()> {
     singleton().lock()
+}
+
+/// Total memory of CUDA device 0 in bytes, or None if there is no usable device.
+pub fn device_total_memory() -> Option<usize> {
+    cust::init(CudaFlags::empty()).ok()?;
+    cust::device::Device::get_device(0)
+        .and_then(|d| d.total_memory())
+        .ok()
 }
 
 #[derive(Clone, Copy)]
@@ -255,6 +345,22 @@ impl CudaHash for CudaHashSha256 {
     fn get_hash_suite(&self) -> &HashSuite<BabyBear> {
         &self.suite
     }
+}
+
+/// `DeviceBuffer::copy_from` from pageable memory (cuMemcpyHtoD) returns once the data is in the
+/// driver's staging buffer; the DMA to the device may still be in flight on the legacy stream.
+/// Kernels on the persistent stream (a blocking stream) are ordered after it, but sppark's
+/// kernels run on non-blocking streams and could read the buffer before the copy lands
+/// (hash_fold_tree read stale leaves about 1 run in 10 at 2^14 leaves). Wait for the legacy
+/// stream, which holds only that copy. `set_32` (cuMemsetD32) is asynchronous on the legacy
+/// stream as well and gets the same wait.
+fn wait_pageable_upload() {
+    let res = unsafe { cust::sys::cuStreamSynchronize(std::ptr::null_mut()) };
+    assert_eq!(
+        res,
+        cust::sys::cudaError_enum::CUDA_SUCCESS,
+        "cuStreamSynchronize failed"
+    );
 }
 
 /// Wait, on the host, for everything queued on the risc0 persistent stream.
@@ -390,7 +496,6 @@ pub struct CudaHal<Hash: CudaHash + ?Sized> {
 pub type CudaHalSha256 = CudaHal<CudaHashSha256>;
 pub type CudaHalPoseidon2 = CudaHal<CudaHashPoseidon2>;
 pub type CudaHalPoseidon254 = CudaHal<CudaHashPoseidon254>;
-
 
 // ====================== VMM (cuMemCreate / cuMemMap) allocator ======================
 // Composes a large contiguous virtual allocation from smaller physical chunks,
@@ -560,9 +665,7 @@ mod vmm {
             let mut base: CUdeviceptr = 0;
             let rc = unsafe { cuMemAddressReserve(&mut base, reserve_size, gran, 0, 0) };
             if rc != 0 {
-                tracing::warn!(
-                    "vmm: cuMemAddressReserve({reserve_size}) failed rc={rc}"
-                );
+                tracing::warn!("vmm: cuMemAddressReserve({reserve_size}) failed rc={rc}");
                 return None;
             }
 
@@ -587,7 +690,8 @@ mod vmm {
                 if rc != 0 {
                     tracing::warn!(
                         "vmm: cuMemCreate(chunk {} / {} bytes at offset {offset}) failed rc={rc}",
-                        this_chunk, reserve_size
+                        this_chunk,
+                        reserve_size
                     );
                     drop(alloc);
                     return None;
@@ -600,8 +704,7 @@ mod vmm {
                     drop(alloc);
                     return None;
                 }
-                let rc =
-                    unsafe { cuMemSetAccess(chunk_ptr, this_chunk, &access, 1) };
+                let rc = unsafe { cuMemSetAccess(chunk_ptr, this_chunk, &access, 1) };
                 if rc != 0 {
                     tracing::warn!("vmm: cuMemSetAccess failed rc={rc}");
                     unsafe { cuMemUnmap(chunk_ptr, this_chunk) };
@@ -691,16 +794,12 @@ impl RawBuffer {
             // every free byte is up for grabs as physical chunks.
             BUFFER_POOL.with(|pool| pool.borrow_mut().drain());
             trim_cuda_mempool();
-            if let Some(allocation) =
-                vmm::VmmAllocation::new(size, 0, vmm::VMM_CHUNK_SIZE)
-            {
+            if let Some(allocation) = vmm::VmmAllocation::new(size, 0, vmm::VMM_CHUNK_SIZE) {
                 // Wrap the VMM virtual pointer in a DeviceBuffer so the rest
                 // of this file keeps working unchanged. We never drop the
                 // DeviceBuffer itself (that would call cuMemFree on a VMM
                 // pointer, which is illegal); the VmmAllocation owns cleanup.
-                let dptr = DevicePointer::<u8>::from_raw(
-                    allocation.ptr as cust::sys::CUdeviceptr,
-                );
+                let dptr = DevicePointer::<u8>::from_raw(allocation.ptr as cust::sys::CUdeviceptr);
                 let buf = unsafe { DeviceBuffer::<u8>::from_raw_parts(dptr, size) };
                 return Self {
                     name,
@@ -743,6 +842,7 @@ impl RawBuffer {
 
     pub fn set_u32(&mut self, value: u32) {
         self.buf.set_32(value).unwrap();
+        wait_pageable_upload();
     }
 }
 
@@ -819,6 +919,7 @@ impl<T> BufferImpl<T> {
         let mut buffer = RawBuffer::new(name, bytes_len);
         let bytes = unchecked_cast(slice);
         buffer.buf.copy_from(bytes).unwrap();
+        wait_pageable_upload();
 
         BufferImpl {
             buffer: Rc::new(RefCell::new(buffer)),
@@ -899,6 +1000,7 @@ impl<T: Clone> Buffer<T> for BufferImpl<T> {
         let slice = unchecked_cast_mut(&mut host_buf);
         f(&mut slice[self.offset..]);
         buf.buf.copy_from(&host_buf).unwrap();
+        wait_pageable_upload();
     }
 
     fn to_vec(&self) -> Vec<T> {
@@ -951,6 +1053,7 @@ impl<CH: CudaHash + ?Sized> CudaHal<CH> {
             fn risc0_zkp_cuda_warmup() -> *const std::os::raw::c_char;
         }
         let _ = ffi_wrap(|| unsafe { risc0_zkp_cuda_warmup() });
+        register_oom_hook();
 
         let mut hal = Self {
             max_threads: max_threads as u32,
@@ -1156,25 +1259,54 @@ impl<CH: CudaHash + ?Sized> Hal for CudaHal<CH> {
         }
     }
 
+    fn has_commit_coeffs_lde(&self, po2: usize) -> bool {
+        // The range sppark_commit_coeffs_lde is verified bit-exact for.
+        (10..=23).contains(&po2)
+    }
+
+    fn commit_coeffs_lde(
+        &self,
+        coeffs: &Self::Buffer<Self::Elem>,
+        evaluated: &Self::Buffer<Self::Elem>,
+        witness: &Self::Buffer<Self::Elem>,
+        count: usize,
+    ) {
+        let row_size = witness.size() / count;
+        assert_eq!(row_size * count, witness.size());
+        assert_eq!(coeffs.size(), witness.size());
+        let n_bits = log2_ceil(row_size);
+        assert_eq!(row_size, 1 << n_bits);
+        let lg_blowup = log2_ceil(crate::INV_RATE);
+        assert_eq!(evaluated.size(), witness.size() << lg_blowup);
+        assert!(n_bits + lg_blowup < Self::Elem::MAX_ROU_PO2);
+        Self::sync_stream();
+        let err = unsafe {
+            sppark_commit_coeffs_lde(
+                coeffs.as_device_ptr(),
+                evaluated.as_device_ptr(),
+                witness.as_device_ptr(),
+                n_bits as u32,
+                lg_blowup as u32,
+                count as u32,
+            )
+        };
+        if err.code != 0 {
+            panic!("Failure during commit_coeffs_lde: {err}");
+        }
+    }
+
     fn batch_bit_reverse(&self, io: &Self::Buffer<Self::Elem>, count: usize) {
         let row_size = io.size() / count;
         assert_eq!(row_size * count, io.size());
         let bits = log2_ceil(row_size);
         assert_eq!(row_size, 1 << bits);
-        let io_size = io.size();
-
-        extern "C" {
-            fn risc0_zkp_cuda_batch_bit_reverse(
-                io: DevicePointer<u8>,
-                bits: u32,
-                count: u32,
-            ) -> *const std::os::raw::c_char;
+        Self::sync_stream();
+        let err = unsafe {
+            sppark_batch_bit_reverse_tiled(io.as_device_ptr(), bits as u32, count as u32)
+        };
+        if err.code != 0 {
+            panic!("Failure during batch_bit_reverse_tiled: {err}");
         }
-
-        ffi_wrap(|| unsafe {
-            risc0_zkp_cuda_batch_bit_reverse(io.as_device_ptr(), bits as u32, io_size as u32)
-        })
-        .unwrap();
     }
 
     fn batch_evaluate_any(
@@ -1207,6 +1339,7 @@ impl<CH: CudaHash + ?Sized> Hal for CudaHal<CH> {
                 shared_size: u32,
                 kernel_count: u32,
                 count: u32,
+                eval_count: u32,
             ) -> *const std::os::raw::c_char;
         }
 
@@ -1219,6 +1352,7 @@ impl<CH: CudaHash + ?Sized> Hal for CudaHal<CH> {
                 shared_size,
                 kernel_count as u32,
                 count as u32,
+                eval_count as u32,
             )
         })
         .unwrap();
@@ -1247,6 +1381,48 @@ impl<CH: CudaHash + ?Sized> Hal for CudaHal<CH> {
                 dst.as_device_ptr(),
                 src.as_device_ptr(),
                 idx as u32,
+                size as u32,
+                stride as u32,
+            )
+        })
+        .unwrap();
+    }
+
+    fn gather_samples(
+        &self,
+        dst: &Self::Buffer<Self::Elem>,
+        src: &Self::Buffer<Self::Elem>,
+        indices: &[usize],
+        size: usize,
+        stride: usize,
+    ) {
+        if indices.len() < 2 {
+            for (q, &idx) in indices.iter().enumerate() {
+                self.gather_sample(&dst.slice(q * size, size), src, idx, size, stride);
+            }
+            return;
+        }
+        let idxs: Vec<u32> = indices.iter().map(|&i| i as u32).collect();
+        // copy_from is a synchronous copy on the legacy stream, which waits for the persistent
+        // stream: so idx_buf can go back to the pool right after the async launch below (the
+        // next copy into it waits for this kernel), as with the other temporaries here.
+        let idx_buf = self.copy_from_u32("gather_idx", &idxs);
+        extern "C" {
+            fn risc0_zkp_cuda_gather_samples(
+                dst: DevicePointer<u8>,
+                src: DevicePointer<u8>,
+                idxs: DevicePointer<u8>,
+                n: u32,
+                size: u32,
+                stride: u32,
+            ) -> *const std::os::raw::c_char;
+        }
+        ffi_wrap(|| unsafe {
+            risc0_zkp_cuda_gather_samples(
+                dst.as_device_ptr(),
+                src.as_device_ptr(),
+                idx_buf.as_device_ptr(),
+                idxs.len() as u32,
                 size as u32,
                 stride as u32,
             )
@@ -1326,7 +1502,7 @@ impl<CH: CudaHash + ?Sized> Hal for CudaHal<CH> {
         Self::sync_stream();
 
         let err = unsafe {
-            sppark_batch_iNTT_zk_shift(
+            sppark_batch_iNTT_zk_shift_fused(
                 io.as_device_ptr(),
                 n_bits.try_into().unwrap(),
                 count.try_into().unwrap(),
@@ -1653,39 +1829,47 @@ impl<CH: CudaHash + ?Sized> Hal for CudaHal<CH> {
         reg_combo_ids: &[u32],
         mix: &Self::ExtElem,
     ) {
-        let coeff_u = self.copy_from_extelem("coeff_u", coeff_u);
-        let combo_count = combo_count as u32;
-        let cycles = cycles as u32;
-        let regs_count = reg_sizes.len() as u32;
-        let reg_sizes = self.copy_from_u32("reg_sizes", reg_sizes);
-        let reg_combo_ids = self.copy_from_u32("reg_combo_ids", reg_combo_ids);
-        let mix = self.copy_from_extelem("mix", &[*mix]);
-
+        // Compute the per-element deltas on the host (coeff_u is host data) and apply them
+        // with one small parallel kernel, instead of a single-thread device loop. The
+        // temporaries are freed after the async launch; see gather_samples.
+        let mut deltas: std::collections::BTreeMap<u32, Self::ExtElem> =
+            std::collections::BTreeMap::new();
+        let mut cur = Self::ExtElem::ONE;
+        let mut pos = 0usize;
+        for (size, combo_id) in reg_sizes.iter().zip(reg_combo_ids.iter()) {
+            for j in 0..*size as usize {
+                let off = (cycles * *combo_id as usize + j) as u32;
+                let e = deltas.entry(off).or_insert(Self::ExtElem::ZERO);
+                *e += cur * coeff_u[pos + j];
+            }
+            cur *= *mix;
+            pos += *size as usize;
+        }
+        for _ in 0..Self::CHECK_SIZE {
+            let off = (cycles * combo_count) as u32;
+            let e = deltas.entry(off).or_insert(Self::ExtElem::ZERO);
+            *e += cur * coeff_u[pos];
+            pos += 1;
+            cur *= *mix;
+        }
+        let offs: Vec<u32> = deltas.keys().copied().collect();
+        let vals: Vec<Self::ExtElem> = deltas.values().copied().collect();
+        let offs_buf = self.copy_from_u32("combos_offs", &offs);
+        let vals_buf = self.copy_from_extelem("combos_deltas", &vals);
         extern "C" {
-            fn risc0_zkp_cuda_combos_prepare(
+            fn risc0_zkp_cuda_combos_sub(
                 combos: DevicePointer<u8>,
-                coeff_u: DevicePointer<u8>,
-                combo_count: u32,
-                cycles: u32,
-                regs_count: u32,
-                reg_sizes: DevicePointer<u8>,
-                reg_combo_ids: DevicePointer<u8>,
-                checkSize: u32,
-                mix: DevicePointer<u8>,
+                deltas: DevicePointer<u8>,
+                offsets: DevicePointer<u8>,
+                count: u32,
             ) -> *const std::os::raw::c_char;
         }
-
         ffi_wrap(|| unsafe {
-            risc0_zkp_cuda_combos_prepare(
+            risc0_zkp_cuda_combos_sub(
                 combos.as_device_ptr(),
-                coeff_u.as_device_ptr(),
-                combo_count,
-                cycles,
-                regs_count,
-                reg_sizes.as_device_ptr(),
-                reg_combo_ids.as_device_ptr(),
-                Self::CHECK_SIZE as u32,
-                mix.as_device_ptr(),
+                vals_buf.as_device_ptr(),
+                offs_buf.as_device_ptr(),
+                offs.len() as u32,
             )
         })
         .unwrap();
@@ -1776,6 +1960,11 @@ mod tests {
     }
 
     #[test]
+    fn hash_fold_tree_poseidon2() {
+        testutil::hash_fold_tree(CudaHalPoseidon2::new());
+    }
+
+    #[test]
     fn fri_fold() {
         testutil::fri_fold(CudaHalSha256::new());
     }
@@ -1783,6 +1972,11 @@ mod tests {
     #[test]
     fn batch_expand_into_evaluate_ntt() {
         testutil::batch_expand_into_evaluate_ntt(CudaHalSha256::new());
+    }
+
+    #[test]
+    fn batch_expand_into_evaluate_ntt_large() {
+        testutil::batch_expand_into_evaluate_ntt_large(CudaHalSha256::new());
     }
 
     #[test]
@@ -1813,5 +2007,10 @@ mod tests {
     #[test]
     fn mix_poly_coeffs() {
         testutil::mix_poly_coeffs(CudaHalSha256::new());
+    }
+
+    #[test]
+    fn commit_coeffs_lde() {
+        testutil::commit_coeffs_lde(CudaHalSha256::new());
     }
 }

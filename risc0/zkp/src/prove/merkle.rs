@@ -111,7 +111,20 @@ impl<H: Hal> MerkleTreeProver<H> {
         scope!("hash_fold", {
             hal.hash_fold_tree(&nodes, params.layers);
         });
-        let root = nodes.get_at(1);
+        // ROCm: the root and the top layer (written by `commit`) in one download: nodes[1..2 *
+        // top_size) holds both (root at 1, top layer at top_size..2 * top_size).
+        let (root, top_nodes) = if cfg!(feature = "rocm") {
+            let top_size = params.top_size;
+            let mut root = Digest::ZERO;
+            let mut top_nodes = Vec::new();
+            nodes.slice(1, 2 * top_size - 1).view(|view| {
+                root = view[0];
+                top_nodes = view[top_size - 1..].to_vec();
+            });
+            (root, Some(top_nodes))
+        } else {
+            (nodes.get_at(1), None)
+        };
         let sample_buf = if !hal.has_unified_memory() && params.col_size > 0 {
             Some(hal.alloc_elem("sample_reuse", params.col_size))
         } else {
@@ -123,7 +136,7 @@ impl<H: Hal> MerkleTreeProver<H> {
             nodes,
             root,
             sample_buf,
-            cached_top_nodes: Arc::new(Mutex::new(None)),
+            cached_top_nodes: Arc::new(Mutex::new(top_nodes)),
         }
     }
 
@@ -202,6 +215,81 @@ impl<H: Hal> MerkleTreeProver<H> {
         out
     }
 
+    /// Sibling node indices of the Merkle paths of `indices`, and how many each path has.
+    fn sibling_indices(&self, indices: &[usize]) -> (Vec<usize>, Vec<usize>) {
+        let mut all = Vec::new();
+        let mut counts = Vec::with_capacity(indices.len());
+        for &idx in indices {
+            let mut count = 0;
+            let mut cur_idx = idx + self.params.row_size;
+            while cur_idx >= 2 * self.params.top_size {
+                let low_bit = cur_idx % 2;
+                cur_idx /= 2;
+                all.push(2 * cur_idx + (1 - low_bit));
+                count += 1;
+            }
+            counts.push(count);
+        }
+        (all, counts)
+    }
+
+    /// [Self::batch_prove] for several trees (each with its own indices), with the GPU gathers
+    /// of all of them in one host round trip where the HAL supports it (`Hal::gather_multi`).
+    #[allow(clippy::type_complexity)]
+    pub fn batch_prove_many(
+        hal: &H,
+        jobs: &[(&Self, &[usize])],
+    ) -> Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> {
+        let fallback = || -> Vec<Vec<(Vec<H::Elem>, Vec<Digest>)>> {
+            jobs.iter()
+                .map(|(tree, indices)| tree.batch_prove(hal, indices))
+                .collect()
+        };
+        if hal.has_unified_memory()
+            || jobs.iter().any(|(t, _)| t.matrix.is_none() || t.params.col_size == 0)
+        {
+            return fallback();
+        }
+        for (tree, indices) in jobs {
+            for &idx in indices.iter() {
+                assert!(idx < tree.params.row_size);
+            }
+        }
+        let paths: Vec<(Vec<usize>, Vec<usize>)> =
+            jobs.iter().map(|(t, indices)| t.sibling_indices(indices)).collect();
+        let gjobs: Vec<crate::hal::GatherJob<'_, H>> = jobs
+            .iter()
+            .zip(&paths)
+            .map(|((t, indices), (nodes, _))| crate::hal::GatherJob {
+                matrix: t.matrix.as_ref().unwrap(),
+                col_size: t.params.col_size,
+                row_size: t.params.row_size,
+                rows: indices,
+                nodes: &t.nodes,
+                node_indices: nodes,
+            })
+            .collect();
+        let Some(gathered) = hal.gather_multi(&gjobs) else {
+            return fallback();
+        };
+        gathered
+            .into_iter()
+            .zip(jobs.iter().zip(&paths))
+            .map(|((cols, digests), ((t, indices), (_, counts)))| {
+                let col_size = t.params.col_size;
+                let mut off = 0;
+                (0..indices.len())
+                    .map(|q| {
+                        let c = cols[q * col_size..(q + 1) * col_size].to_vec();
+                        let d = digests[off..off + counts[q]].to_vec();
+                        off += counts[q];
+                        (c, d)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Batch-prove multiple indices at once, returning data without writing to IOP.
     /// GPU work is batched: N gather_sample kernels + 1 D2H, 1 batch digest read + 1 D2H.
     /// The caller is responsible for writing to IOP in the correct order.
@@ -232,16 +320,10 @@ impl<H: Hal> MerkleTreeProver<H> {
         } else if col_size > 0 {
             // GPU path: batch all gather_sample kernels (async), single D2H via view()
             let batch_buf = hal.alloc_elem("batch_samples", n * col_size);
-            for (i, &idx) in indices.iter().enumerate() {
+            for &idx in indices.iter() {
                 assert!(idx < self.params.row_size);
-                hal.gather_sample(
-                    &batch_buf.slice(i * col_size, col_size),
-                    matrix,
-                    idx,
-                    col_size,
-                    self.params.row_size,
-                );
             }
+            hal.gather_samples(&batch_buf, matrix, indices, col_size, self.params.row_size);
             batch_buf.view(|view| {
                 for i in 0..n {
                     all_col_data.push(view[i * col_size..(i + 1) * col_size].to_vec());

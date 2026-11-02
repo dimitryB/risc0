@@ -35,6 +35,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <exception>
 #include <numeric>
@@ -328,3 +329,87 @@ const char* risc0_circuit_recursion_cpu_eval_check(
 }
 
 } // extern "C"
+
+// Execute the sequential (non-par-safe) chains of length >= the caller's threshold on the
+// host, so the GPU witgen does not run them one thread at a time (the longest lift chain, a
+// 1439-cycle Poseidon2 sponge, is ~90% of the GPU stepExec time). A chain reads only its own
+// rows, ctrl at its own rows, and the WOM/IOP preflight data, so each chain is executed in a
+// small private window: local cycle i (1..len) <-> global cycle start + i - 1, with a
+// power-of-two window size as the step count. (A global steps-sized column-major scratch is
+// ~10x slower: every column is a 1 MB power-of-two stride apart and the rows thrash the
+// caches.) step_exec uses `steps` and `cycle` only to index the buffers and the trace.
+//
+// code: row-major program code (numCycles x ctrlCols). chains: (start, len) pairs.
+// Outputs, per chain row r in chain order: outCycles[r], outRows[r*dataCols + k] (raw Fp, every
+// data column), outWomIdx[r] (number of plonkWrite_wom rows), outWomRows[(r*9 + j)*5 ..]
+// ({addr as raw Fp, value[4]}). Errors if a chain wrote a global (the caller falls back).
+extern "C" const char* risc0_circuit_recursion_cpu_chains(const Fp* code,
+                                                         uint32_t ctrlCols,
+                                                         const PreflightTrace* trace,
+                                                         uint32_t /*steps*/,
+                                                         uint32_t dataCols,
+                                                         const uint32_t* chains,
+                                                         uint32_t nchains,
+                                                         uint32_t* outCycles,
+                                                         uint32_t* outRows,
+                                                         uint32_t* outWomIdx,
+                                                         uint32_t* outWomRows) {
+  try {
+    std::vector<size_t> offset(nchains + 1, 0);
+    for (uint32_t i = 0; i < nchains; i++) offset[i + 1] = offset[i] + chains[2 * i + 1];
+    std::vector<uint32_t> order(nchains);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+      return chains[2 * a + 1] > chains[2 * b + 1];
+    });
+    std::atomic<bool> wroteGlobal{false};
+    const uint32_t* code32 = reinterpret_cast<const uint32_t*>(code);
+    std::for_each(poolstl::par, order.begin(), order.end(), [&](uint32_t ci) {
+      uint32_t start = chains[2 * ci], len = chains[2 * ci + 1];
+      uint32_t S = 2;
+      while (S < len + 1) S <<= 1;
+      std::vector<uint32_t> ctrl((size_t)S * ctrlCols, kInvalidPattern);
+      std::vector<uint32_t> data((size_t)S * dataCols, kInvalidPattern);
+      uint32_t global[64];
+      for (auto& g : global) g = kInvalidPattern;
+      for (uint32_t i = 1; i <= len; i++) {
+        size_t c = start + i - 1;
+        for (uint32_t k = 0; k < ctrlCols; k++) ctrl[(size_t)k * S + i] = code32[c * ctrlCols + k];
+      }
+      // Private copy of the window's cycles (readIOPBody advances iopIdx); slot 0 is unused.
+      std::vector<PreflightCycle> cyc(len + 1);
+      for (uint32_t i = 1; i <= len; i++) cyc[i] = trace->cycles[start + i - 1];
+      PreflightTrace tr = *trace;
+      tr.cycles = cyc.data();
+      tr.numCycles = len + 1;
+      ExecBuffers eb{reinterpret_cast<Fp*>(ctrl.data()),
+                     reinterpret_cast<Fp*>(data.data()),
+                     reinterpret_cast<Fp*>(global)};
+      MachineContext mctx(&eb, &tr, S);
+      Fp* args[3] = {eb.ctrl, eb.global, eb.data};
+      for (uint32_t i = 1; i <= len; i++) step_exec(&mctx, S, i, args);
+      for (auto g : global) {
+        if (g != kInvalidPattern) wroteGlobal = true;
+      }
+      size_t r = offset[ci];
+      for (uint32_t i = 1; i <= len; i++, r++) {
+        outCycles[r] = start + i - 1;
+        for (uint32_t k = 0; k < dataCols; k++) outRows[r * dataCols + k] = data[(size_t)k * S + i];
+        outWomIdx[r] = mctx.womIndex[i];
+        for (uint32_t j = 0; j < kMaxWomRowsPerCycle; j++) {
+          const WomArgumentRow& w = mctx.womRows[(size_t)i * kMaxWomRowsPerCycle + j];
+          uint32_t* o = &outWomRows[(r * kMaxWomRowsPerCycle + j) * 5];
+          // The device rows keep the address as a raw Fp (the host decodes it).
+          o[0] = w.addr == kInvalidPattern ? kInvalidPattern : Fp(w.addr).asRaw();
+          for (int e = 0; e < 4; e++) o[1 + e] = w.value.elems[e].asRaw();
+        }
+      }
+    });
+    if (wroteGlobal) {
+      throw std::runtime_error("host chain wrote a global");
+    }
+  } catch (const std::exception& err) {
+    return strdup(err.what());
+  }
+  return nullptr;
+}

@@ -352,7 +352,19 @@ const char* risc0_circuit_rv32im_cpu_accum(AccumBuffers* buffers,
         for (size_t j = 0; j < machineColumns - 1; j++) {
           for (size_t k = 0; k < 4; k++) {
             size_t col = kUserAccumSplit + j * 4 + k;
-            buffers->accum.set(row, col, buffers->accum.get(row, col) + prev[k]);
+            // Phase 1 leaves some machine cells unset, and the accum buffer starts out INVALID
+            // (0xffffffff), so an unset cell counts as 0 and ends up holding prev[k]. Adding
+            // prev[k] to the INVALID bit pattern instead stored prev[k] - 1 (wrapped) or, when
+            // prev[k] was exactly 0, 0xffffffff - P: an unreduced value that the INVALID -> 0
+            // zeroize after this misses and the NTT mishandles, so the committed accum
+            // polynomial no longer matched the trace and the segment's proof was invalid (about
+            // once per 3,000-7,000 segments). The constraints accept any reduced value in these
+            // cells (prev[k] - 1 before, prev[k] now), so proofs verify as before.
+            Fp cur = buffers->accum.get(row, col);
+            if (cur == Fp::invalid()) {
+              cur = Fp(0);
+            }
+            buffers->accum.set(row, col, cur + prev[k]);
           }
         }
       });

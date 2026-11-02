@@ -6958,6 +6958,7 @@ dependencies = [
  "cc",
  "directories",
  "hex",
+ "jobserver",
  "rayon",
  "sha2",
  "tempfile",
@@ -7166,6 +7167,7 @@ dependencies = [
  "anyhow",
  "blst",
  "risc0-build-kernel",
+ "risc0-sys",
  "sppark",
  "test-log",
  "tracing",
@@ -8287,9 +8289,8 @@ dependencies = [
 
 [[package]]
 name = "sppark"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9c900139f3f6fdc8db217881a946adf00e935102fdd82b0e1bc19bacbffa311"
+version = "0.1.15"
+source = "git+https://github.com/hemilabs/risc0-sppark?rev=5f68eb3eb9e4e06c9837d22aade07ed40432889f#5f68eb3eb9e4e06c9837d22aade07ed40432889f"
 dependencies = [
  "cc",
  "which 4.4.2",

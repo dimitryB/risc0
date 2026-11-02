@@ -18,7 +18,10 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     mem::ManuallyDrop,
-    sync::{Arc, OnceLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, OnceLock,
+    },
 };
 
 use parking_lot::{Mutex, ReentrantMutex};
@@ -270,7 +273,10 @@ struct IntelBufferPool {
     total_cached: usize,
 }
 
-const POOL_MAX_BYTES: usize = 16 << 30; // 16 GiB cap
+/// The most the pool keeps in idle buffers: a quarter of the GPU's memory, at most 16 GiB. A
+/// fixed 16 GiB is more than an Arc B580's whole memory (12 GB), and allocations made inside the
+/// C++ kernels can't take it back from the pool the way [RawBuffer::new] can.
+const POOL_MAX_BYTES: usize = 16 << 30;
 const POOL_SMALL_THRESHOLD: usize = 64 << 10; // Always pool buffers under 64 KiB
 
 impl IntelBufferPool {
@@ -293,8 +299,13 @@ impl IntelBufferPool {
 
     /// Returns the buffer back if the pool is full, so the caller frees it
     /// outside the pool lock.
-    fn push(&mut self, size: usize, buf: IntelDeviceBuffer) -> Option<IntelDeviceBuffer> {
-        if size < POOL_SMALL_THRESHOLD || self.total_cached + size <= POOL_MAX_BYTES {
+    fn push(
+        &mut self,
+        size: usize,
+        buf: IntelDeviceBuffer,
+        max_bytes: usize,
+    ) -> Option<IntelDeviceBuffer> {
+        if size < POOL_SMALL_THRESHOLD || self.total_cached + size <= max_bytes {
             self.total_cached += size;
             self.cache.entry(size).or_default().push(buf);
             None
@@ -322,6 +333,40 @@ pub fn release_idle_buffers() {
 
 static BUFFER_POOL: LazyLock<Mutex<IntelBufferPool>> =
     LazyLock::new(|| Mutex::new(IntelBufferPool::new()));
+
+/// Cards with less memory than this keep only small buffers in the pool on Windows (see
+/// [pool_max_bytes]).
+const POOL_SMALL_CARD_BYTES: usize = 20 << 30;
+
+/// The pool's cap for this GPU (see [POOL_MAX_BYTES]). The device's memory is known once the
+/// queue exists, which every buffer's allocation has ensured.
+///
+/// On Windows a card with less than [POOL_SMALL_CARD_BYTES] pools only small buffers. There an
+/// allocation beyond the card's memory does not fail but spills into shared system memory, so
+/// [RawBuffer::new]'s release of the pool on a failed allocation never happens, and idle buffers
+/// kept from earlier proofs pushed later ones off the card. On a 12 GB Arc B580 at po2=20, 3 GiB
+/// of pooled buffers left the next sessions' segments at 42-46 s after the first's 28 s (with up
+/// to 1.2 GB in shared memory); pooling only small buffers kept them at 28-30 s, with the first
+/// session no slower. Sessions at po2=19 took ~3% longer without the pool (64.4 s, from 62.1).
+fn pool_max_bytes() -> usize {
+    static MAX: AtomicUsize = AtomicUsize::new(0);
+    let max = MAX.load(Ordering::Relaxed);
+    if max != 0 {
+        return max;
+    }
+    let total = intel::device_total_memory();
+    if total == 0 {
+        return POOL_MAX_BYTES;
+    }
+    let max = if cfg!(windows) && total < POOL_SMALL_CARD_BYTES {
+        // Nonzero, as 0 means not yet known; [IntelBufferPool::push] keeps small buffers anyway.
+        1
+    } else {
+        (total / 4).min(POOL_MAX_BYTES)
+    };
+    MAX.store(max, Ordering::Relaxed);
+    max
+}
 
 // ============================================================================
 // RawBuffer - RAII device allocation with tracking + pool
@@ -365,9 +410,10 @@ impl Drop for RawBuffer {
         tracing::trace!("free: {size} bytes, {}", self.name);
         tracker().lock().unwrap().free(size);
         let buf = unsafe { ManuallyDrop::take(&mut self.buf) };
-        let overflow = BUFFER_POOL.lock().push(size, buf);
+        let max_bytes = pool_max_bytes();
+        let overflow = BUFFER_POOL.lock().push(size, buf, max_bytes);
         if overflow.is_some() {
-            // Over the pool cap (reachable at po2=21): the buffer is freed, and
+            // Over the pool cap (reachable in long sessions): the buffer is freed, and
             // esimd_free_device does not wait for queued kernels still using it.
             unsafe { intel::esimd_sync(get_queue()) };
         }

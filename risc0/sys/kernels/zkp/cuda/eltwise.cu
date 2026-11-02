@@ -77,8 +77,10 @@ __global__ void eltwise_zeroize_fp(Fp* elems, const uint32_t count) {
   // adjacent pool-reused memory — corrupting other buffers (intermittent invalid
   // multi-segment proofs) and reading uninitialized memory (initcheck flag).
   if (idx < count) {
-    Fp val = elems[idx];
-    elems[idx] = val.zeroize();
+    // Write only the INVALID cells: a read-mostly pass with the same result.
+    if (elems[idx].asRaw() == Fp::INVALID) {
+      elems[idx] = Fp();
+    }
   }
 }
 

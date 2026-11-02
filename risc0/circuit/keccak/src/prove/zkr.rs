@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::Read as _;
+use std::{
+    collections::BTreeMap,
+    io::Read as _,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{bail, Result};
 use liblzma::read::XzDecoder;
@@ -34,4 +38,16 @@ pub fn get_keccak_zkr(po2: usize) -> Result<Program> {
     let mut u32s = vec![0u32; uncompressed_size / std::mem::size_of::<u32>()];
     decoder.read_exact(bytemuck::cast_slice_mut(&mut u32s))?;
     Ok(Program::from_encoded(&u32s, RECURSION_PO2))
+}
+
+/// The keccak lift program for `po2`, as [get_keccak_zkr] returns it, decoded once per process: a
+/// session lifts every keccak proof it makes, and decoding the program took 68 ms each time.
+pub fn get_keccak_zkr_shared(po2: usize) -> Result<Arc<Program>> {
+    static PROGRAMS: Mutex<BTreeMap<usize, Arc<Program>>> = Mutex::new(BTreeMap::new());
+    if let Some(program) = PROGRAMS.lock().unwrap().get(&po2) {
+        return Ok(program.clone());
+    }
+    let program = Arc::new(get_keccak_zkr(po2)?);
+    PROGRAMS.lock().unwrap().insert(po2, program.clone());
+    Ok(program)
 }

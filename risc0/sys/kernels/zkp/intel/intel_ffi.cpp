@@ -12,6 +12,48 @@
 #include <algorithm>
 #include <deque>
 
+// On Windows, Level Zero's USM pool off, set while this library loads (before any thread runs,
+// and before SYCL initializes Level Zero, which reads it then). The HAL pools device buffers
+// itself (risc0-zkp's Intel HAL), and the Groth16 prover allocates in a context of its own.
+// Buffers they freed stayed in the adapter's pool, still counted in this process's video memory
+// usage, where neither could reuse them, so later allocations spilled into shared system memory:
+// on a 12 GB Arc B580 at po2=20, with the pool, the third session's segments took 35.6 s instead
+// of 28-30 s. UR_L0_DISABLE_USM_ALLOCATOR=0 (or its older name,
+// SYCL_PI_LEVEL_ZERO_DISABLE_USM_ALLOCATOR) keeps it.
+// Also on Windows, immediate command lists and no copy engine for Level Zero's legacy adapter,
+// which the loader picks for an Alchemist card (Arc A770) when no visible device supports the V2
+// adapter. Without both, the recursion receipts came out wrong on an A770 (the next join's
+// preflight failed an equality check) unless a host wait followed each eval_check. Either
+// variable set keeps its value. On V2, the A770 lost the device (UR_RESULT_ERROR_DEVICE_LOST)
+// a few po2=20 segments into a session, so V2 is not forced here; with a Battlemage card also
+// visible the loader picks V2 for both. Battlemage runs on V2, which ignores these.
+#ifdef _WIN32
+static const bool kLevelZeroEnv = [] {
+    if (!std::getenv("UR_L0_DISABLE_USM_ALLOCATOR") &&
+        !std::getenv("SYCL_PI_LEVEL_ZERO_DISABLE_USM_ALLOCATOR"))
+        _putenv_s("UR_L0_DISABLE_USM_ALLOCATOR", "1");
+    if (!std::getenv("UR_L0_USE_IMMEDIATE_COMMANDLISTS") &&
+        !std::getenv("SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS"))
+        _putenv_s("UR_L0_USE_IMMEDIATE_COMMANDLISTS", "1");
+    if (!std::getenv("UR_L0_USE_COPY_ENGINE") &&
+        !std::getenv("SYCL_PI_LEVEL_ZERO_USE_COPY_ENGINE"))
+        _putenv_s("UR_L0_USE_COPY_ENGINE", "0");
+    return true;
+}();
+#endif
+
+// SYCL's persistent kernel cache on, unless SYCL_CACHE_PERSISTENT says otherwise: GPUs without
+// ahead-of-time code (e.g. Alchemist, Arc A770) get their kernels compiled from SPIR-V by the
+// driver on first use, which for the eval_check kernels takes minutes; cached, only once.
+static const bool kSyclCacheEnv = [] {
+#ifdef _WIN32
+    if (!std::getenv("SYCL_CACHE_PERSISTENT")) _putenv_s("SYCL_CACHE_PERSISTENT", "1");
+#else
+    setenv("SYCL_CACHE_PERSISTENT", "1", 0);
+#endif
+    return true;
+}();
+
 // Host-to-device staging. A pageable q.memcpy is NOT reliably captured at
 // enqueue: NEO stages only the first copy from a given host address, and a
 // later copy from the same address that is enqueued before the host has seen
@@ -190,6 +232,11 @@ void* esimd_create_queue() {
     } catch (...) {
         return nullptr;
     }
+}
+
+// Total memory of the GPU the queues run on, in bytes; 0 before the first queue exists.
+size_t esimd_device_total_memory() {
+    return g_shared_device ? g_shared_device->get_info<sycl::info::device::global_mem_size>() : 0;
 }
 
 void esimd_destroy_queue(void* queue) {
