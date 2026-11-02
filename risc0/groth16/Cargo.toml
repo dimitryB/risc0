@@ -65,6 +65,7 @@ default = ["std"]
 # Intel builds: in-process witness generation + pre-started Docker prover
 # (see src/prove/fast.rs).
 intel = ["dep:circom-witnesscalc", "dep:sha2", "dep:wtns-file", "prove"]
+native-groth16 = ["dep:circom-witnesscalc", "dep:sha2", "dep:wtns-file", "dep:rayon", "prove"]
 prove = [
   "dep:cfg-if",
   "dep:risc0-core",

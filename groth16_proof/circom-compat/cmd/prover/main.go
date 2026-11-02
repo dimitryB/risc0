@@ -20,8 +20,29 @@ import (
 	"time"
 )
 
+// Native callers opt in; existing container invocations retain their behavior.
+var nativeParent = flag.Int("native-parent", 0, "exit if this parent PID disappears")
+var nativeTimeout = flag.Duration("native-timeout", 0, "maximum native helper lifetime")
+
 func main() {
 	flag.Parse()
+	if *nativeTimeout > 0 {
+		time.AfterFunc(*nativeTimeout, func() { os.Exit(124) })
+	}
+	if *nativeParent > 0 {
+		if os.Getppid() != *nativeParent {
+			os.Exit(125)
+		}
+		go func() {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for range ticker.C {
+				if os.Getppid() != *nativeParent {
+					os.Exit(125)
+				}
+			}
+		}()
+	}
 	if flag.NArg() < 4 {
 		help()
 	}

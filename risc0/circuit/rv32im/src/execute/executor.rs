@@ -332,7 +332,11 @@ impl<'a, 'b, S: Syscall> Executor<'a, 'b, S> {
 
             Risc0Machine::suspend(self)?;
 
-            let final_cycles = self.segment_cycles().next_power_of_two();
+            // Padding changes only the trace length, not guest execution or the claim.
+            // Respect explicitly smaller execution-only caps; zkVM proving callers
+            // must select a cap at least MIN_RECURSION_PO2.
+            let final_cycles = self.segment_cycles().next_power_of_two()
+                .max(1 << segment_po2.min(super::MIN_RECURSION_PO2));
             let final_po2 = log2_ceil(final_cycles as usize);
             let partial_image = self.pager.commit();
             let req = CreateSegmentRequest {

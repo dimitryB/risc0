@@ -16,14 +16,21 @@
 
 #[cfg(feature = "cuda")]
 mod cuda;
-#[cfg(not(any(feature = "cuda", feature = "rocm")))]
+#[cfg(not(any(feature = "cuda", feature = "rocm", feature = "native-groth16")))]
 mod docker;
 #[cfg(all(feature = "intel", not(any(feature = "cuda", feature = "rocm"))))]
 mod fast;
 #[cfg(feature = "rocm")]
 mod hip;
+#[cfg(feature = "native-groth16")]
+pub mod native;
 mod seal_format;
 mod seal_to_json;
+#[cfg(all(
+    any(feature = "intel", feature = "native-groth16"),
+    not(any(feature = "cuda", feature = "rocm"))
+))]
+mod witness;
 
 use anyhow::Result;
 
@@ -40,6 +47,8 @@ pub fn preload_graph() -> Result<()> {
             self::cuda::preload_graph()
         } else if #[cfg(feature = "rocm")] {
             self::hip::preload_graph()
+        } else if #[cfg(feature = "native-groth16")] {
+            self::native::preload()
         } else if #[cfg(feature = "intel")] {
             self::fast::preload()
         } else {
@@ -110,6 +119,8 @@ pub fn shrink_wrap(identity_p254_seal_bytes: &[u8]) -> Result<Seal> {
             self::cuda::shrink_wrap(identity_p254_seal_bytes)
         } else if #[cfg(feature = "rocm")] {
             self::hip::shrink_wrap(identity_p254_seal_bytes)
+        } else if #[cfg(feature = "native-groth16")] {
+            self::native::shrink_wrap(identity_p254_seal_bytes)
         } else {
             self::docker::shrink_wrap(identity_p254_seal_bytes)
         }

@@ -8,7 +8,7 @@ WORKDIR /usr/src/
 
 # Clone and build Circom version 2.2.2 from a specific commit
 ADD https://github.com/iden3/circom.git#e410b0d5cd2948a15931df0bc50d79ce56fa8c32 circom
-RUN (cd circom; cargo install --path circom)
+RUN (cd circom; cargo install --locked --path circom)
 
 # Add the required circuit files
 COPY groth16/risc0.circom groth16/risc0.circom

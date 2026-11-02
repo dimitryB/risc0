@@ -38,6 +38,10 @@ pub use self::{
 
 pub const DEFAULT_SEGMENT_LIMIT_PO2: usize = 20;
 
+/// Smallest lift supported by the pinned recursion control root. Lower caps
+/// remain available to execution-only circuit tests, not zkVM compression.
+pub const MIN_RECURSION_PO2: usize = 14;
+
 pub(crate) fn node_idx(page_idx: u32) -> u32 {
     MEMORY_PAGES as u32 + page_idx
 }
