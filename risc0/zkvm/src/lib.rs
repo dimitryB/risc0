@@ -73,6 +73,9 @@
 //! export RISC0_RECURSION_HAL=metal
 //! ```
 //!
+//! The legacy fold-only `metal-hybrid` feature is retired and emits a migration
+//! error when selected. Use `metal-rv32im` for segment acceleration.
+//!
 //! The selectors default to `cpu` when unset. RV32IM Metal supports segment po2
 //! 14 through 20. Witness generation, accumulation and identity-p254 remain on
 //! CPU; Groth16 wrapping is configured separately.
@@ -105,6 +108,9 @@ pub use anyhow::Result;
 pub use risc0_binfmt::{ExitCode, InvalidExitCodeError, SystemState};
 pub use risc0_zkp::core::digest::{digest, Digest};
 pub use risc0_zkvm_platform::{align_up, declare_syscall, memory::GUEST_MAX_MEM, PAGE_SIZE};
+
+#[cfg(feature = "metal-hybrid")]
+compile_error!("metal-hybrid is retired; use risc0-zkvm/metal-rv32im and RISC0_SEGMENT_HAL=metal");
 
 #[cfg(all(
     feature = "metal-hybrid",

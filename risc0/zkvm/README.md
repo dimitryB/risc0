@@ -56,6 +56,9 @@ export RISC0_SEGMENT_HAL=metal
 export RISC0_RECURSION_HAL=metal
 ```
 
+The legacy fold-only `metal-hybrid` feature is retired and emits a migration
+error when selected. Use `metal-rv32im` for segment acceleration.
+
 The selectors default to `cpu` when unset. RV32IM Metal supports segment po2
 14 through 20. Witness generation, accumulation and identity-p254 remain on
 CPU; Groth16 wrapping is configured separately.

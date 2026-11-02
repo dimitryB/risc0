@@ -14,6 +14,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "metal-hybrid")]
+compile_error!("metal-hybrid is retired; use risc0-zkvm/metal-rv32im and RISC0_SEGMENT_HAL=metal");
+
 #[cfg(all(feature = "metal", not(all(target_os = "macos", target_arch = "aarch64"))))]
 compile_error!("RV32IM Metal requires Apple Silicon macOS");
 #[cfg(all(feature = "metal", any(feature = "cuda", feature = "rocm", feature = "intel", feature = "metal-hybrid")))]
