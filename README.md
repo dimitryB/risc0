@@ -167,9 +167,28 @@ The following feature flags are present in one or more of the crates listed abov
 | client           | all except rv32im | std        | Enables the client API.                                                                                                                                      | risc0-zkvm                                                           |
 | cuda             |                   | prove, std | Enables CUDA GPU acceleration for the prover. Requires CUDA toolkit to be installed.                                                                         | risc0-circuit-recursion, risc0-circuit-rv32im, risc0-zkp, risc0-zkvm |
 | disable-dev-mode | all except rv32im |            | Disables dev mode so that proving and verifying may not be faked. Used to prevent a misplaced `RISC0_DEV_MODE` from breaking security in production systems. | risc0-zkvm                                                           |
-| metal            | macos             | prove, std | Deprecated - Metal GPU acceleration is enabled by default on Apple Silicon.                                                                                  | risc0-circuit-recursion, risc0-circuit-rv32im, risc0-zkp, risc0-zkvm |
+| metal            | macos             | prove, std | Opt-in Metal support. See macOS proving below for circuit features and runtime selection. | risc0-circuit-recursion, risc0-circuit-rv32im, risc0-zkp, risc0-zkvm |
+| metal-recursion  | macos (arm64)     | prove, std | Opt-in Poseidon2 lift/join recursion Metal acceleration. | risc0-zkvm |
+| metal-rv32im     | macos (arm64)     | prove, std | Opt-in RV32IM Metal transforms, commitments and constraint evaluation. | risc0-zkvm |
 | prove            | all except rv32im | std        | Enables the prover, incompatible within the zkvm guest.                                                                                                      | risc0-circuit-recursion, risc0-circuit-rv32im, risc0-zkp, risc0-zkvm |
 | std              | all               |            | Support for the Rust stdlib.                                                                                                                                 | risc0-circuit-recursion, risc0-circuit-rv32im, risc0-zkp, risc0-zkvm |
+
+### macOS proving
+
+On this branch, proving on Apple Silicon uses the CPU by default. The
+`risc0-zkvm` feature `metal` builds Metal primitives; circuit acceleration
+requires explicit selection. To use both accelerated stages on Apple Silicon
+macOS, enable the `risc0-zkvm` features `metal-rv32im` and `metal-recursion`, then
+run your prover with:
+
+```sh
+export RISC0_SEGMENT_HAL=metal
+export RISC0_RECURSION_HAL=metal
+```
+
+The selectors default to `cpu` when unset. RV32IM Metal supports segment po2
+14 through 20. Witness generation, accumulation and identity-p254 remain on
+CPU; Groth16 wrapping is configured separately.
 
 ## License
 

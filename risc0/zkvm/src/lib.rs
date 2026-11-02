@@ -54,9 +54,28 @@
 //! | client           | all except rv32im | std        | Enables the client API.                                                                                                                                      |
 //! | cuda             |                   | prove, std | Enables CUDA GPU acceleration for the prover. Requires CUDA toolkit to be installed.                                                                         |
 //! | disable-dev-mode | all except rv32im |            | Disables dev mode so that proving and verifying may not be faked. Used to prevent a misplaced `RISC0_DEV_MODE` from breaking security in production systems. |
-//! | metal            | macos             | prove, std | Deprecated - Metal GPU acceleration for the prover is now enabled by default on Apple Silicon.                                                               |
+//! | metal            | macos             | prove, std | Builds Metal primitives; circuit acceleration requires the features and runtime selection below. |
+//! | metal-recursion  | macos (arm64)     | prove, std | Opt-in Poseidon2 lift/join recursion Metal acceleration. |
+//! | metal-rv32im     | macos (arm64)     | prove, std | Opt-in RV32IM Metal transforms, commitments and constraint evaluation. |
 //! | prove            | all except rv32im | std        | Enables the prover, incompatible within the zkvm guest.                                                                                                      |
 //! | std              | all               |            | Support for the Rust stdlib.                                                                                                                                 |
+//!
+//! ## macOS proving
+//!
+//! On this branch, proving on Apple Silicon uses the CPU by default. The
+//! `risc0-zkvm` feature `metal` builds Metal primitives; circuit acceleration
+//! requires explicit selection. To use both accelerated stages on Apple Silicon
+//! macOS, enable the `risc0-zkvm` features `metal-rv32im` and `metal-recursion`, then
+//! run your prover with:
+//!
+//! ```sh
+//! export RISC0_SEGMENT_HAL=metal
+//! export RISC0_RECURSION_HAL=metal
+//! ```
+//!
+//! The selectors default to `cpu` when unset. RV32IM Metal supports segment po2
+//! 14 through 20. Witness generation, accumulation and identity-p254 remain on
+//! CPU; Groth16 wrapping is configured separately.
 //!
 //! [`cargo risczero` tool]: https://crates.io/crates/cargo-risczero
 //! [dev-docs]: https://dev.risczero.com
