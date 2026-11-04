@@ -1001,6 +1001,11 @@ impl ProverImpl {
             let t_psc = std::time::Instant::now();
             #[cfg(feature = "metal-hybrid")]
             let metal_before = self.with_segment_prover(|sp| Ok(sp.metal_stats()))?;
+            #[cfg(feature = "metal-rv32im")]
+            let prev_seal = risc0_zkp::hal::metal::with_profile_segment(segment_index, || {
+                self.with_segment_prover(|sp| sp.prove_begin(results.inner))
+            })?;
+            #[cfg(not(feature = "metal-rv32im"))]
             let prev_seal = self.with_segment_prover(|sp| sp.prove_begin(results.inner))?;
             #[cfg(feature = "metal-hybrid")]
             self.record_metal_segment(segment_index, po2, metal_before)?;
@@ -1625,6 +1630,12 @@ impl ProverServer for ProverImpl {
         let t_psc = std::time::Instant::now();
         #[cfg(feature = "metal-hybrid")]
         let metal_before = self.with_segment_prover(|sp| Ok(sp.metal_stats()))?;
+        #[cfg(feature = "metal-rv32im")]
+        let seal =
+            risc0_zkp::hal::metal::with_profile_segment(preflight_results.segment_index, || {
+                self.with_segment_prover(|sp| sp.prove_core(preflight_results.inner))
+            })?;
+        #[cfg(not(feature = "metal-rv32im"))]
         let seal = self.with_segment_prover(|sp| sp.prove_core(preflight_results.inner))?;
         #[cfg(feature = "metal-hybrid")]
         self.record_metal_segment(preflight_results.segment_index, po2, metal_before)?;

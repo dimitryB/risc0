@@ -14,14 +14,16 @@
 
 use std::{
     cell::Cell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::c_void,
     fmt::Debug,
     marker::PhantomData,
     mem, slice,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
+    time::Instant,
 };
 
+use metal::objc::{sel, sel_impl};
 use metal::{
     Buffer as MetalBuffer, CommandQueue, ComputeCommandEncoderRef, ComputePipelineDescriptor,
     Device, MTLArgumentBuffersTier, MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
@@ -216,6 +218,74 @@ pub struct MetalHal<Hash: MetalHash + ?Sized> {
 
 pub type MetalHalSha256 = MetalHal<MetalHashSha256>;
 pub type MetalHalPoseidon2 = MetalHal<MetalHashPoseidon2>;
+
+/// Cumulative command-buffer GPU time and pipeline limits for one Metal stage/kernel.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct MetalKernelStats {
+    pub commands: u64,
+    pub gpu_seconds: f64,
+    pub dispatch_wall_seconds: f64,
+    pub pipeline_seconds: f64,
+    pub invalid_gpu_timestamps: u64,
+    pub thread_execution_width: u64,
+    pub max_total_threads_per_threadgroup: u64,
+    pub static_threadgroup_memory_length: u64,
+}
+
+thread_local! {
+    static PROFILE_SEGMENT: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+struct ProfileSegmentGuard(Option<u32>);
+
+impl Drop for ProfileSegmentGuard {
+    fn drop(&mut self) {
+        PROFILE_SEGMENT.with(|segment| segment.set(self.0));
+    }
+}
+
+/// Tag all synchronous Metal commands inside a segment proof with its index.
+pub fn with_profile_segment<R>(index: u32, f: impl FnOnce() -> R) -> R {
+    let previous = PROFILE_SEGMENT.with(|segment| segment.replace(Some(index)));
+    let _guard = ProfileSegmentGuard(previous);
+    f()
+}
+
+fn profile_counters() -> &'static Mutex<BTreeMap<String, MetalKernelStats>> {
+    static COUNTERS: OnceLock<Mutex<BTreeMap<String, MetalKernelStats>>> = OnceLock::new();
+    COUNTERS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Snapshot cumulative per-kernel timings for a proof boundary.
+pub fn metal_gpu_stats() -> BTreeMap<String, MetalKernelStats> {
+    profile_counters().lock().unwrap().clone()
+}
+
+/// GPU timings since a prior snapshot, filtered to `segment/` or `recursion/`.
+pub fn metal_gpu_stats_since(
+    before: &BTreeMap<String, MetalKernelStats>,
+    prefix: &str,
+) -> BTreeMap<String, MetalKernelStats> {
+    metal_gpu_stats()
+        .into_iter()
+        .filter_map(|(name, mut now)| {
+            if !name.starts_with(prefix) {
+                return None;
+            }
+            if let Some(then) = before.get(&name) {
+                if now.commands == then.commands {
+                    return None;
+                }
+                now.commands -= then.commands;
+                now.gpu_seconds -= then.gpu_seconds;
+                now.dispatch_wall_seconds -= then.dispatch_wall_seconds;
+                now.pipeline_seconds -= then.pipeline_seconds;
+                now.invalid_gpu_timestamps -= then.invalid_gpu_timestamps;
+            }
+            Some((name, now))
+        })
+        .collect()
+}
 
 #[derive(Debug)]
 struct TrackedBuffer(MetalBuffer);
@@ -539,6 +609,7 @@ impl<MH: MetalHash> MetalHal<MH> {
         // after each synchronous completion so completed commands cannot retain
         // proof buffers until a process-wide or thread-local pool is drained.
         metal::objc::rc::autoreleasepool(|| {
+            let dispatch_started = Instant::now();
             let cmd_buffer = self.cmd_queue.new_command_buffer();
             let kernel_name = kernel.compute_function().unwrap().name();
             cmd_buffer.set_label(kernel_name);
@@ -546,10 +617,12 @@ impl<MH: MetalHash> MetalHal<MH> {
 
             callback(cmd_encoder);
 
+            let pipeline_started = Instant::now();
             let pipeline_state = self
                 .device
                 .new_compute_pipeline_state_with_function(kernel.compute_function().unwrap())
                 .unwrap();
+            let pipeline_seconds = pipeline_started.elapsed().as_secs_f64();
 
             cmd_encoder.set_compute_pipeline_state(&pipeline_state);
             for (index, arg) in args.iter().enumerate() {
@@ -593,6 +666,51 @@ impl<MH: MetalHash> MetalHal<MH> {
                 MTLCommandBufferStatus::Completed,
                 "Metal kernel {kernel_name} failed (command status {status:?})"
             );
+            // The pinned metal crate has no wrappers for these two MTLCommandBuffer
+            // properties. The command has completed, so both timestamps are valid
+            // when the driver supplies GPU timing. Keep a counter if it does not.
+            let gpu_start: f64 = unsafe { metal::objc::msg_send![cmd_buffer, GPUStartTime] };
+            let gpu_end: f64 = unsafe { metal::objc::msg_send![cmd_buffer, GPUEndTime] };
+            let valid_gpu_time = gpu_start > 0.0 && gpu_end > gpu_start;
+            let gpu_seconds = if valid_gpu_time {
+                gpu_end - gpu_start
+            } else {
+                0.0
+            };
+            let dispatch_wall_seconds = dispatch_started.elapsed().as_secs_f64();
+            let segment = PROFILE_SEGMENT.with(Cell::get);
+            let stage = if segment.is_some() {
+                "segment"
+            } else {
+                "recursion"
+            };
+            let name = format!("{stage}/{kernel_name}");
+            {
+                let mut all = profile_counters().lock().unwrap();
+                let stats = all.entry(name).or_default();
+                stats.commands += 1;
+                stats.gpu_seconds += gpu_seconds;
+                stats.dispatch_wall_seconds += dispatch_wall_seconds;
+                stats.pipeline_seconds += pipeline_seconds;
+                stats.invalid_gpu_timestamps += u64::from(!valid_gpu_time);
+                stats.thread_execution_width = pipeline_state.thread_execution_width();
+                stats.max_total_threads_per_threadgroup =
+                    pipeline_state.max_total_threads_per_threadgroup();
+                stats.static_threadgroup_memory_length =
+                    pipeline_state.static_threadgroup_memory_length();
+            }
+            if std::env::var_os("RISC0_METAL_GPU_PROFILE").is_some() {
+                eprintln!(
+                    "[metal_gpu] kernel={kernel_name} segment={} count={count} gpu_ms={:.3} dispatch_wall_ms={:.3} pipeline_ms={:.3} thread_execution_width={} max_total_threads_per_threadgroup={} static_threadgroup_memory_length={}",
+                    segment.map(i64::from).unwrap_or(-1),
+                    if valid_gpu_time { gpu_seconds * 1000.0 } else { -1.0 },
+                    dispatch_wall_seconds * 1000.0,
+                    pipeline_seconds * 1000.0,
+                    pipeline_state.thread_execution_width(),
+                    pipeline_state.max_total_threads_per_threadgroup(),
+                    pipeline_state.static_threadgroup_memory_length(),
+                );
+            }
             self.completed_dispatches
                 .set(self.completed_dispatches.get() + 1);
             tracing::debug!(kernel = kernel_name, count, "Metal dispatch completed");
