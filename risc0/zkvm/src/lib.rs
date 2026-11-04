@@ -73,8 +73,8 @@
 //! export RISC0_RECURSION_HAL=metal
 //! ```
 //!
-//! The legacy fold-only `metal-hybrid` feature is retired and emits a migration
-//! error when selected. Use `metal-rv32im` for segment acceleration.
+//! The legacy fold-only `metal-hybrid` feature was removed. Use `metal-rv32im`
+//! for segment acceleration.
 //!
 //! The selectors default to `cpu` when unset. RV32IM Metal supports segment po2
 //! 14 through 20. Witness generation, accumulation and identity-p254 remain on
@@ -109,31 +109,29 @@ pub use risc0_binfmt::{ExitCode, InvalidExitCodeError, SystemState};
 pub use risc0_zkp::core::digest::{digest, Digest};
 pub use risc0_zkvm_platform::{align_up, declare_syscall, memory::GUEST_MAX_MEM, PAGE_SIZE};
 
-#[cfg(feature = "metal-hybrid")]
-compile_error!("metal-hybrid is retired; use risc0-zkvm/metal-rv32im and RISC0_SEGMENT_HAL=metal");
+#[cfg(all(
+    feature = "metal-recursion",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+pub use risc0_circuit_recursion::prove::{
+    metal_recursion_kernel_source, metal_recursion_stats, MetalRecursionStats,
+};
 
 #[cfg(all(
-    feature = "metal-hybrid",
+    feature = "metal-rv32im",
     not(all(target_os = "macos", target_arch = "aarch64"))
 ))]
-compile_error!("metal-hybrid requires Apple Silicon macOS");
+compile_error!("metal-rv32im requires Apple Silicon macOS");
 #[cfg(all(
-    feature = "metal-hybrid",
+    feature = "metal-rv32im",
     any(feature = "cuda", feature = "rocm", feature = "intel")
 ))]
-compile_error!("metal-hybrid must be built separately from CUDA, ROCm, and Intel backends");
-#[cfg(feature = "metal-hybrid")]
-pub use self::host::client::prove::local::MetalSegmentReport;
-
-#[cfg(all(feature = "metal-recursion", target_os = "macos", target_arch = "aarch64"))]
-pub use risc0_circuit_recursion::prove::{metal_recursion_stats, metal_recursion_kernel_source, MetalRecursionStats};
-
-#[cfg(all(feature = "metal-rv32im", not(all(target_os = "macos", target_arch = "aarch64"))))]
-compile_error!("metal-rv32im requires Apple Silicon macOS");
-#[cfg(all(feature = "metal-rv32im", any(feature = "cuda", feature = "rocm", feature = "intel", feature = "metal-hybrid")))]
 compile_error!("metal-rv32im must be selected separately from other segment backends");
 #[cfg(all(feature = "metal-rv32im", target_os = "macos", target_arch = "aarch64"))]
-pub use risc0_circuit_rv32im::prove::{metal_rv32im_stats, metal_rv32im_kernel_source, MetalRv32imStats};
+pub use risc0_circuit_rv32im::prove::{
+    metal_rv32im_kernel_source, metal_rv32im_stats, MetalRv32imStats,
+};
 
 #[cfg(not(target_os = "zkvm"))]
 #[cfg(any(feature = "client", feature = "prove"))]

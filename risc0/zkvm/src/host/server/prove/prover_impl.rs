@@ -141,11 +141,6 @@ fn join_cuda_rec_warmup() {
 /// An implementation of a Prover that runs locally.
 pub struct ProverImpl {
     opts: ProverOpts,
-    #[cfg(feature = "metal-hybrid")]
-    metal: Option<(
-        Box<dyn SegmentProver>,
-        std::sync::Arc<std::sync::Mutex<Vec<crate::MetalSegmentReport>>>,
-    )>,
 }
 
 impl ProverImpl {
@@ -174,70 +169,11 @@ impl ProverImpl {
         if opts.receipt_kind == ReceiptKind::Groth16 {
             risc0_groth16::prove::preload_graph_background();
         }
-        Self {
-            opts,
-            #[cfg(feature = "metal-hybrid")]
-            metal: None,
-        }
-    }
-
-    #[cfg(feature = "metal-hybrid")]
-    pub(crate) fn new_metal(
-        opts: ProverOpts,
-        staging_bytes: usize,
-        reports: std::sync::Arc<std::sync::Mutex<Vec<crate::MetalSegmentReport>>>,
-    ) -> Result<Self> {
-        let prover = risc0_circuit_rv32im::prove::metal_segment_prover(staging_bytes)?;
-        Ok(Self {
-            opts,
-            metal: Some((prover, reports)),
-        })
+        Self { opts }
     }
 
     fn with_segment_prover<R>(&self, f: impl FnOnce(&dyn SegmentProver) -> Result<R>) -> Result<R> {
-        #[cfg(feature = "metal-hybrid")]
-        if let Some((prover, _)) = &self.metal {
-            return f(prover.as_ref());
-        }
         with_segment_prover(f)
-    }
-
-    #[cfg(feature = "metal-hybrid")]
-    fn record_metal_segment(
-        &self,
-        segment_index: u32,
-        po2: u32,
-        before: Option<risc0_circuit_rv32im::prove::MetalFoldStats>,
-    ) -> Result<()> {
-        if let Some((prover, reports)) = &self.metal {
-            let before = before.context("missing Metal segment start counters")?;
-            let after = prover
-                .metal_stats()
-                .context("missing Metal segment end counters")?;
-            let report = crate::MetalSegmentReport {
-                segment_index,
-                po2,
-                completed_dispatches: after.completed_dispatches - before.completed_dispatches,
-                fold_calls: after.fold_calls - before.fold_calls,
-                input_digests: after.input_digests - before.input_digests,
-                output_digests: after.output_digests - before.output_digests,
-                peak_staging_bytes: after.peak_staging_bytes,
-                staging_limit_bytes: after.staging_limit_bytes,
-            };
-            ensure!(
-                report.completed_dispatches > 0
-                    && report.fold_calls > 0
-                    && report.output_digests > 0
-                    && report.input_digests == 2 * report.output_digests,
-                "segment did not execute the required Metal Poseidon2 folds"
-            );
-            ensure!(
-                report.peak_staging_bytes <= report.staging_limit_bytes,
-                "Metal staging budget exceeded"
-            );
-            reports.lock().unwrap().push(report);
-        }
-        Ok(())
     }
 
     /// Parallel STARK proving: both GPUs prove segments simultaneously, then recursion runs
@@ -999,16 +935,12 @@ impl ProverImpl {
             // complete prev deferred finalize + launch eval_check for this segment.
             // Returns the PREVIOUS segment's seal (None on first call).
             let t_psc = std::time::Instant::now();
-            #[cfg(feature = "metal-hybrid")]
-            let metal_before = self.with_segment_prover(|sp| Ok(sp.metal_stats()))?;
             #[cfg(feature = "metal-rv32im")]
             let prev_seal = risc0_zkp::hal::metal::with_profile_segment(segment_index, || {
                 self.with_segment_prover(|sp| sp.prove_begin(results.inner))
             })?;
             #[cfg(not(feature = "metal-rv32im"))]
             let prev_seal = self.with_segment_prover(|sp| sp.prove_begin(results.inner))?;
-            #[cfg(feature = "metal-hybrid")]
-            self.record_metal_segment(segment_index, po2, metal_before)?;
             let prove_begin_ms = t_psc.elapsed().as_secs_f64() * 1000.0;
             // Segment 0's GPU work (incl. its eval_check) is queued: release the Groth16 key
             // loader, so its pinned uploads and cold allocations do not compete with
@@ -1628,8 +1560,6 @@ impl ProverServer for ProverImpl {
         let po2 = preflight_results.inner.po2();
         release_pool_on_po2_growth(po2);
         let t_psc = std::time::Instant::now();
-        #[cfg(feature = "metal-hybrid")]
-        let metal_before = self.with_segment_prover(|sp| Ok(sp.metal_stats()))?;
         #[cfg(feature = "metal-rv32im")]
         let seal =
             risc0_zkp::hal::metal::with_profile_segment(preflight_results.segment_index, || {
@@ -1637,8 +1567,6 @@ impl ProverServer for ProverImpl {
             })?;
         #[cfg(not(feature = "metal-rv32im"))]
         let seal = self.with_segment_prover(|sp| sp.prove_core(preflight_results.inner))?;
-        #[cfg(feature = "metal-hybrid")]
-        self.record_metal_segment(preflight_results.segment_index, po2, metal_before)?;
         if *VERBOSE {
             eprintln!(
                 "[prove_segment_core] prove_core: {:.1}ms",

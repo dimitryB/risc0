@@ -23,10 +23,9 @@ use risc0_core::scope;
 
 use crate::execute::segment::Segment;
 
-pub use risc0_zkp::hal::cpu::MetalFoldStats;
-pub use witgen::PreflightResults;
 #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
-pub use self::hal::metal::{metal_rv32im_stats, metal_rv32im_kernel_source, MetalRv32imStats};
+pub use self::hal::metal::{metal_rv32im_kernel_source, metal_rv32im_stats, MetalRv32imStats};
+pub use witgen::PreflightResults;
 
 /// The `rand_z` of a segment preflight ([PreflightResults::new]): random, or one with the
 /// `witgen_debug` feature (reproducible witnesses).
@@ -46,11 +45,6 @@ const GLOBAL_OUT: usize = 1;
 pub type Seal = Vec<u32>;
 
 pub trait SegmentProver {
-    /// Cumulative GPU execution evidence, available only for explicit hybrid provers.
-    fn metal_stats(&self) -> Option<MetalFoldStats> {
-        None
-    }
-
     fn prove(&self, segment: &Segment) -> Result<Seal> {
         scope!("prove");
         let results = self.preflight(segment)?;
@@ -97,13 +91,13 @@ pub fn release_intel_scratch() {
 
 pub fn segment_prover() -> Result<Box<dyn SegmentProver>> {
     match std::env::var("RISC0_SEGMENT_HAL").as_deref() {
-        Err(std::env::VarError::NotPresent) | Ok("cpu") => {},
+        Err(std::env::VarError::NotPresent) | Ok("cpu") => {}
         Ok("metal") => {
             #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
             return self::hal::metal::segment_prover();
             #[cfg(not(all(feature = "metal", target_os = "macos", target_arch = "aarch64")))]
             anyhow::bail!("RV32IM Metal is not compiled into this engine");
-        },
+        }
         _ => anyhow::bail!("RISC0_SEGMENT_HAL must be cpu or metal"),
     }
     cfg_if! {
@@ -119,12 +113,6 @@ pub fn segment_prover() -> Result<Box<dyn SegmentProver>> {
             self::hal::cpu::segment_prover()
         }
     }
-}
-
-/// Explicit CPU segment prover with only Poseidon2 Merkle folding on Metal.
-#[cfg(all(feature = "metal-hybrid", target_os = "macos", target_arch = "aarch64"))]
-pub fn metal_segment_prover(staging_bytes: usize) -> Result<Box<dyn SegmentProver>> {
-    self::hal::cpu::metal_segment_prover(staging_bytes)
 }
 
 /// Trigger HIP module loading so the first kernel launch doesn't stall.

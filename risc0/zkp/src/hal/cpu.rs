@@ -34,55 +34,13 @@ use crate::{
     FRI_FOLD,
 };
 
-/// Cumulative evidence for the opt-in Metal Merkle-fold stage.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MetalFoldStats {
-    pub completed_dispatches: u64,
-    pub fold_calls: u64,
-    pub output_digests: u64,
-    pub input_digests: u64,
-    /// Maximum temporary shared GPU buffer allocation, excluding fixed constants.
-    pub peak_staging_bytes: usize,
-    pub staging_limit_bytes: usize,
-}
-
-/// Optional per-instance Merkle-fold implementation. All buffers remain CPU buffers.
-pub trait CpuHashFold {
-    /// Return true only when the complete fold was performed by this implementation.
-    fn hash_fold(&self, io: &CpuBuffer<Digest>, input_size: usize, output_size: usize) -> bool;
-
-    fn metal_stats(&self) -> Option<MetalFoldStats> {
-        None
-    }
-}
-
-/// The default strategy preserves the existing CPU behavior and Send/Sync properties.
-pub struct CpuOnly;
-
-impl CpuHashFold for CpuOnly {
-    fn hash_fold(&self, _io: &CpuBuffer<Digest>, _input_size: usize, _output_size: usize) -> bool {
-        false
-    }
-}
-
-pub struct CpuHal<F: Field, A = CpuOnly> {
+pub struct CpuHal<F: Field> {
     suite: HashSuite<F>,
-    hash_fold: A,
 }
 
 impl<F: Field> CpuHal<F> {
     pub fn new(suite: HashSuite<F>) -> Self {
-        Self {
-            suite,
-            hash_fold: CpuOnly,
-        }
-    }
-}
-
-impl<F: Field, A: CpuHashFold> CpuHal<F, A> {
-    /// Use a fold strategy whose hash algorithm matches `suite` exactly.
-    pub fn with_hash_fold(suite: HashSuite<F>, hash_fold: A) -> Self {
-        Self { suite, hash_fold }
+        Self { suite }
     }
 }
 
@@ -302,7 +260,7 @@ impl<T: Clone> Buffer<T> for CpuBuffer<T> {
     }
 }
 
-impl<F: Field, A: CpuHashFold> Hal for CpuHal<F, A> {
+impl<F: Field> Hal for CpuHal<F> {
     type Field = F;
     type Elem = F::Elem;
     type ExtElem = F::ExtElem;
@@ -611,9 +569,6 @@ impl<F: Field, A: CpuHashFold> Hal for CpuHal<F, A> {
     fn hash_fold(&self, io: &Self::Buffer<Digest>, input_size: usize, output_size: usize) {
         assert!(io.size() >= 2 * input_size);
         assert_eq!(input_size, 2 * output_size);
-        if self.hash_fold.hash_fold(io, input_size, output_size) {
-            return;
-        }
         let io = io.as_slice_sync();
         let output = io.slice(output_size, output_size);
         let input = io.slice(input_size, input_size);
@@ -623,10 +578,6 @@ impl<F: Field, A: CpuHashFold> Hal for CpuHal<F, A> {
             let in2 = input.get(2 * idx + 1);
             output.set(idx, *hashfn.hash_pair(&in1, &in2));
         });
-    }
-
-    fn metal_stats(&self) -> Option<MetalFoldStats> {
-        self.hash_fold.metal_stats()
     }
 
     fn gather_sample(

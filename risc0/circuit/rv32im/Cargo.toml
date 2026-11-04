@@ -85,8 +85,6 @@ intel = [
   "risc0-zkp/intel",
 ]
 default = []
-# Retired compatibility name: enabling it emits migration guidance.
-metal-hybrid = ["prove", "risc0-zkp/metal-runtime"]
 metal = ["prove", "risc0-zkp/metal-runtime", "dep:metal"]
 # entropy_finder = []
 execute = [

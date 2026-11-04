@@ -25,10 +25,7 @@ use risc0_sys::ffi_wrap;
 use risc0_zkp::{
     core::{hash::poseidon2::Poseidon2HashSuite, log2_ceil},
     field::{map_pow, Elem, ExtElem as _, RootsOfUnity as _},
-    hal::{
-        cpu::{CpuBuffer, CpuHashFold, CpuOnly},
-        AccumPreflight, CircuitHal,
-    },
+    hal::{cpu::CpuBuffer, AccumPreflight, CircuitHal},
     INV_RATE,
 };
 
@@ -44,19 +41,19 @@ use crate::{
     },
 };
 
-type CpuHal<A = CpuOnly> = risc0_zkp::hal::cpu::CpuHal<CircuitField, A>;
+type CpuHal = risc0_zkp::hal::cpu::CpuHal<CircuitField>;
 
 #[derive(Default)]
 pub struct CpuCircuitHal;
 
-impl<A: CpuHashFold> CircuitWitnessGenerator<CpuHal<A>> for CpuCircuitHal {
+impl CircuitWitnessGenerator<CpuHal> for CpuCircuitHal {
     fn generate_witness(
         &self,
         mode: StepMode,
         preflight: &PreflightTrace,
-        global: &MetaBuffer<CpuHal<A>>,
-        data: &MetaBuffer<CpuHal<A>>,
-        _pre_data: &MetaBuffer<CpuHal<A>>,
+        global: &MetaBuffer<CpuHal>,
+        data: &MetaBuffer<CpuHal>,
+        _pre_data: &MetaBuffer<CpuHal>,
     ) -> Result<()> {
         scope!("cpu_witgen");
         let cycles = preflight.cycles.len();
@@ -98,14 +95,14 @@ impl<A: CpuHashFold> CircuitWitnessGenerator<CpuHal<A>> for CpuCircuitHal {
     }
 }
 
-impl<A: CpuHashFold> CircuitAccumulator<CpuHal<A>> for CpuCircuitHal {
+impl CircuitAccumulator<CpuHal> for CpuCircuitHal {
     fn step_accum(
         &self,
         preflight: &PreflightTrace,
-        data: &MetaBuffer<CpuHal<A>>,
-        accum: &MetaBuffer<CpuHal<A>>,
-        global: &MetaBuffer<CpuHal<A>>,
-        mix: &MetaBuffer<CpuHal<A>>,
+        data: &MetaBuffer<CpuHal>,
+        accum: &MetaBuffer<CpuHal>,
+        global: &MetaBuffer<CpuHal>,
+        mix: &MetaBuffer<CpuHal>,
     ) -> Result<()> {
         scope!("accumulate");
         let cycles = preflight.cycles.len();
@@ -152,7 +149,7 @@ impl<A: CpuHashFold> CircuitAccumulator<CpuHal<A>> for CpuCircuitHal {
     }
 }
 
-impl<A: CpuHashFold> CircuitHal<CpuHal<A>> for CpuCircuitHal {
+impl CircuitHal<CpuHal> for CpuCircuitHal {
     fn eval_check(
         &self,
         check: &CpuBuffer<Val>,
@@ -235,18 +232,5 @@ pub fn segment_prover() -> Result<Box<dyn SegmentProver>> {
         let suite = Poseidon2HashSuite::new_suite();
         (Arc::new(CpuHal::new(suite)), Arc::new(CpuCircuitHal))
     };
-    Ok(Box::new(SegmentProverImpl::new(hal_factory)))
-}
-
-#[cfg(all(feature = "metal-hybrid", target_os = "macos", target_arch = "aarch64"))]
-pub fn metal_segment_prover(staging_bytes: usize) -> Result<Box<dyn SegmentProver>> {
-    use risc0_zkp::hal::metal_fold::MetalPoseidon2Fold;
-
-    let hal = Arc::new(CpuHal::with_hash_fold(
-        Poseidon2HashSuite::new_suite(),
-        MetalPoseidon2Fold::new(staging_bytes)?,
-    ));
-    let circuit_hal = Arc::new(CpuCircuitHal);
-    let hal_factory = move || (Arc::clone(&hal), Arc::clone(&circuit_hal));
     Ok(Box::new(SegmentProverImpl::new(hal_factory)))
 }

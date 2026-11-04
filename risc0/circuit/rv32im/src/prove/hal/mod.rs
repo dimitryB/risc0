@@ -13,14 +13,14 @@
 // limitations under the License.
 
 pub(crate) mod cpu;
-#[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
-pub(crate) mod metal;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda;
 #[cfg(feature = "rocm")]
 pub(crate) mod hip;
 #[cfg(feature = "intel")]
 pub(crate) mod intel;
+#[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+pub(crate) mod metal;
 
 use std::{
     cell::RefCell,
@@ -56,7 +56,7 @@ use risc0_zkp::{
 };
 
 use super::{
-    witgen::{preflight::PreflightTrace, prefill_next_segment, PreflightResults, WitnessGenerator},
+    witgen::{prefill_next_segment, preflight::PreflightTrace, PreflightResults, WitnessGenerator},
     Seal, SegmentProver,
 };
 use crate::{
@@ -200,10 +200,6 @@ where
     C: CircuitHal<H> + CircuitWitnessGenerator<H> + CircuitAccumulator<H> + 'static,
     F: Fn() -> (Arc<H>, Arc<C>),
 {
-    fn metal_stats(&self) -> Option<super::MetalFoldStats> {
-        self.get_hal().0.metal_stats()
-    }
-
     fn preflight(&self, segment: &Segment) -> Result<PreflightResults> {
         scope!("preflight");
 

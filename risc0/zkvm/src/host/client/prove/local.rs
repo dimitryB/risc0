@@ -25,35 +25,6 @@ use crate::{
 /// [get_prover_server].
 pub struct LocalProver {
     name: String,
-    #[cfg(feature = "metal-hybrid")]
-    metal_staging_bytes: Option<usize>,
-    #[cfg(feature = "metal-hybrid")]
-    metal_request: std::sync::Mutex<()>,
-    #[cfg(feature = "metal-hybrid")]
-    metal_reports: std::sync::Arc<std::sync::Mutex<Vec<MetalSegmentReport>>>,
-}
-
-/// Actual, completed Poseidon2 Merkle work for one locally proved segment.
-/// This diagnostic is separate from all receipt and worker wire formats.
-#[cfg(feature = "metal-hybrid")]
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct MetalSegmentReport {
-    /// Segment index within this proof request.
-    pub segment_index: u32,
-    /// Segment cycle bound as a power of two.
-    pub po2: u32,
-    /// Successfully completed Metal command buffers, excluding empty work.
-    pub completed_dispatches: u64,
-    /// Merkle fold calls delegated to Metal.
-    pub fold_calls: u64,
-    /// Digests consumed by those folds.
-    pub input_digests: u64,
-    /// Digests produced by those folds.
-    pub output_digests: u64,
-    /// Maximum temporary shared Metal buffer allocation.
-    pub peak_staging_bytes: usize,
-    /// Configured cap for temporary shared Metal buffers.
-    pub staging_limit_bytes: usize,
 }
 
 impl LocalProver {
@@ -61,31 +32,7 @@ impl LocalProver {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            #[cfg(feature = "metal-hybrid")]
-            metal_staging_bytes: None,
-            #[cfg(feature = "metal-hybrid")]
-            metal_request: Default::default(),
-            #[cfg(feature = "metal-hybrid")]
-            metal_reports: Default::default(),
         }
-    }
-    /// Require Metal for segment Poseidon2 Merkle folds. Other stages remain CPU.
-    /// The staging budget must be between 4 KiB and 16 MiB. Device, compilation,
-    /// allocation or dispatch failures fail the request without CPU fallback.
-    /// This selection is local only and is never serialized to a remote prover.
-    #[cfg(feature = "metal-hybrid")]
-    pub fn new_metal(name: &str, staging_bytes: usize) -> Self {
-        Self {
-            metal_staging_bytes: Some(staging_bytes),
-            ..Self::new(name)
-        }
-    }
-
-    /// Completed segment work from the latest prove request (including partial
-    /// progress if a later stage failed). Compression does not change it.
-    #[cfg(feature = "metal-hybrid")]
-    pub fn metal_stage_reports(&self) -> Vec<MetalSegmentReport> {
-        self.metal_reports.lock().unwrap().clone()
     }
 }
 
@@ -97,19 +44,6 @@ impl Prover for LocalProver {
         elf: &[u8],
         opts: &ProverOpts,
     ) -> Result<ProveInfo> {
-        #[cfg(feature = "metal-hybrid")]
-        if let Some(staging_bytes) = self.metal_staging_bytes {
-            use crate::host::server::prove::prover_impl::ProverImpl;
-            use crate::ProverServer;
-            // Keep diagnostics request-local even when callers share this prover.
-            // Acquire before clearing counters or waiting for the Metal device.
-            let _request = self.metal_request.lock().unwrap();
-            self.metal_reports.lock().unwrap().clear();
-            anyhow::ensure!(!opts.dev_mode(), "Metal acceptance requires real proving");
-            let prover =
-                ProverImpl::new_metal(opts.clone(), staging_bytes, self.metal_reports.clone())?;
-            return prover.prove_with_ctx(env, ctx, elf);
-        }
         get_prover_server(opts)?.prove_with_ctx(env, ctx, elf)
     }
 

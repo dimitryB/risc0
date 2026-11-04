@@ -27,12 +27,6 @@ pub mod intel;
     any(all(target_os = "macos", target_arch = "aarch64"), target_os = "ios")
 ))]
 pub mod metal;
-#[cfg(all(
-    feature = "metal-runtime",
-    target_os = "macos",
-    target_arch = "aarch64"
-))]
-pub mod metal_fold;
 
 use std::{
     fmt::Debug,
@@ -90,11 +84,6 @@ pub trait Hal {
     const CHECK_SIZE: usize = INV_RATE * Self::ExtElem::EXT_SIZE;
 
     fn has_unified_memory(&self) -> bool;
-
-    /// Cumulative execution evidence for the opt-in hybrid Metal fold stage.
-    fn metal_stats(&self) -> Option<cpu::MetalFoldStats> {
-        None
-    }
 
     /// Ask the HAL to return any cached / stream-ordered mempool memory back
     /// to the driver. Called at GPU-memory-pressure points (e.g. after a host
@@ -313,7 +302,10 @@ pub trait Hal {
     /// `matrix[row + i * row_size]` (query-major, as `gather_samples`) and the digests at
     /// `node_indices` (as `batch_get_digest_at`).
     #[allow(clippy::type_complexity)]
-    fn gather_multi(&self, _jobs: &[GatherJob<'_, Self>]) -> Option<Vec<(Vec<Self::Elem>, Vec<Digest>)>>
+    fn gather_multi(
+        &self,
+        _jobs: &[GatherJob<'_, Self>],
+    ) -> Option<Vec<(Vec<Self::Elem>, Vec<Digest>)>>
     where
         Self: Sized,
     {
