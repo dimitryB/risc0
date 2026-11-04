@@ -29,5 +29,25 @@ fn main() {
             String::from_utf8_lossy(&result.stderr)
         );
         println!("cargo:rustc-env=RV32IM_METAL_SOURCE={}", output.display());
+        let evalfast = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("rv32im-evalfast.metal");
+        let result = Command::new("python3")
+            .arg(package.join("metal/port_evalfast.py"))
+            .arg("--engine")
+            .arg(root)
+            .arg("--reference-metadata")
+            .arg(output.with_extension("json"))
+            .arg("--output")
+            .arg(&evalfast)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "RV32IM evalfast Metal generation failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        println!(
+            "cargo:rustc-env=RV32IM_EVALFAST_METAL_SOURCE={}",
+            evalfast.display()
+        );
     }
 }

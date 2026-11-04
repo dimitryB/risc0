@@ -41,6 +41,10 @@ use std::{
 };
 
 const SOURCE: &str = include_str!(env!("RV32IM_METAL_SOURCE"));
+const EVALFAST_SOURCE: &str = include_str!(env!("RV32IM_EVALFAST_METAL_SOURCE"));
+fn evalfast_enabled() -> bool {
+    std::env::var("RISC0_RV32IM_EVALFAST").as_deref() == Ok("1")
+}
 static CPU_CHECKS: AtomicU64 = AtomicU64::new(0);
 static CHECKS: AtomicU64 = AtomicU64::new(0);
 static POINTS: AtomicU64 = AtomicU64::new(0);
@@ -74,36 +78,56 @@ pub fn metal_rv32im_stats() -> MetalRv32imStats {
     }
 }
 pub fn metal_rv32im_kernel_source() -> &'static str {
-    SOURCE
+    if evalfast_enabled() {
+        EVALFAST_SOURCE
+    } else {
+        SOURCE
+    }
 }
 
 struct MetalCircuitHal {
     hal: Arc<MetalHalPoseidon2>,
-    kernel: ComputePipelineDescriptor,
+    kernels: Vec<ComputePipelineDescriptor>,
+    evalfast: bool,
 }
 impl MetalCircuitHal {
     fn new(hal: Arc<MetalHalPoseidon2>) -> Result<Self> {
         let started = std::time::Instant::now();
+        let evalfast = evalfast_enabled();
         let options = CompileOptions::new();
         options.set_fast_math_enabled(false);
         let library = hal
             .device
-            .new_library_with_source(SOURCE, &options)
+            .new_library_with_source(if evalfast { EVALFAST_SOURCE } else { SOURCE }, &options)
             .map_err(|e| anyhow::anyhow!("RV32IM Metal compilation failed: {e}"))?;
-        let function = library
-            .get_function("eval_check", None)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let kernel = ComputePipelineDescriptor::new();
-        kernel.set_compute_function(Some(&function));
-        hal.device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let names: &[&str] = if evalfast {
+            &["ef_prep", "ef_eval_split", "ef_combine"]
+        } else {
+            &["eval_check"]
+        };
+        let mut kernels = Vec::with_capacity(names.len());
+        for name in names {
+            let function = library
+                .get_function(name, None)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let kernel = ComputePipelineDescriptor::new();
+            kernel.set_compute_function(Some(&function));
+            hal.device
+                .new_compute_pipeline_state_with_function(&function)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            kernels.push(kernel);
+        }
         HALS.with(|hals| hals.borrow_mut().push(Arc::downgrade(&hal)));
         tracing::info!(
             seconds = started.elapsed().as_secs_f64(),
+            evalfast,
             "RV32IM Metal evaluator compiled"
         );
-        Ok(Self { hal, kernel })
+        Ok(Self {
+            hal,
+            kernels,
+            evalfast,
+        })
     }
 }
 
@@ -228,30 +252,77 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
         let factors = self
             .hal
             .copy_from_elem("rv32im_normalization", &normalization);
-        // The po2-20 synthetic sweep found 256 faster than 32/64/128 and
-        // matched the CPU oracle at each size. Completion still precedes CPU
-        // access, input release, and the next segment.
+        // Synchronous completion precedes CPU access, input release, and the
+        // next segment. The separate phases preserve the CPU oracle output.
         const THREADS: usize = 256;
-        self.hal.dispatch(
-            &self.kernel,
-            &[
-                check.as_arg(),
-                groups[REGISTER_GROUP_CODE].as_arg(),
-                groups[REGISTER_GROUP_DATA].as_arg(),
-                groups[REGISTER_GROUP_ACCUM].as_arg(),
-                globals[GLOBAL_MIX].as_arg(),
-                globals[GLOBAL_OUT].as_arg(),
-                powers.as_arg(),
-                factors.as_arg(),
-                KernelArg::Integer(po2 as u32),
-                KernelArg::Integer(domain as u32),
-            ],
-            domain as u64,
-            Some((
-                MTLSize::new((domain / THREADS) as u64, 1, 1),
-                MTLSize::new(THREADS as u64, 1, 1),
-            )),
-        );
+        if self.evalfast {
+            let table = self.hal.alloc_extelem("rv32im_evalfast_table", 627);
+            let scratch = self.hal.alloc_elem("rv32im_evalfast_scratch", domain * 4);
+            self.hal.dispatch(
+                &self.kernels[0],
+                &[
+                    powers.as_arg(),
+                    globals[GLOBAL_OUT].as_arg(),
+                    globals[GLOBAL_MIX].as_arg(),
+                    table.as_arg(),
+                ],
+                1,
+                Some((MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1))),
+            );
+            self.hal.dispatch(
+                &self.kernels[1],
+                &[
+                    check.as_arg(),
+                    groups[REGISTER_GROUP_DATA].as_arg(),
+                    groups[REGISTER_GROUP_ACCUM].as_arg(),
+                    globals[GLOBAL_MIX].as_arg(),
+                    globals[GLOBAL_OUT].as_arg(),
+                    table.as_arg(),
+                    scratch.as_arg(),
+                    KernelArg::Integer(domain as u32),
+                ],
+                (2 * domain) as u64,
+                Some((
+                    MTLSize::new((2 * domain / THREADS) as u64, 1, 1),
+                    MTLSize::new(THREADS as u64, 1, 1),
+                )),
+            );
+            self.hal.dispatch(
+                &self.kernels[2],
+                &[
+                    check.as_arg(),
+                    scratch.as_arg(),
+                    factors.as_arg(),
+                    KernelArg::Integer(domain as u32),
+                ],
+                domain as u64,
+                Some((
+                    MTLSize::new((domain / THREADS) as u64, 1, 1),
+                    MTLSize::new(THREADS as u64, 1, 1),
+                )),
+            );
+        } else {
+            self.hal.dispatch(
+                &self.kernels[0],
+                &[
+                    check.as_arg(),
+                    groups[REGISTER_GROUP_CODE].as_arg(),
+                    groups[REGISTER_GROUP_DATA].as_arg(),
+                    groups[REGISTER_GROUP_ACCUM].as_arg(),
+                    globals[GLOBAL_MIX].as_arg(),
+                    globals[GLOBAL_OUT].as_arg(),
+                    powers.as_arg(),
+                    factors.as_arg(),
+                    KernelArg::Integer(po2 as u32),
+                    KernelArg::Integer(domain as u32),
+                ],
+                domain as u64,
+                Some((
+                    MTLSize::new((domain / THREADS) as u64, 1, 1),
+                    MTLSize::new(THREADS as u64, 1, 1),
+                )),
+            );
+        }
         if std::env::var("RISC0_RV32IM_METAL_CHECK_CPU").as_deref() == Ok("1") {
             // All GPU writes completed above. The shared buffers remain alive
             // and immutable throughout these CPU oracle reads; no extra trace
