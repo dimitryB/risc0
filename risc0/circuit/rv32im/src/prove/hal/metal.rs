@@ -228,9 +228,10 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
         let factors = self
             .hal
             .copy_from_elem("rv32im_normalization", &normalization);
-        // The reported maximum of 1024 threads exhausts private/spill backing.
-        // Keep the independently validated 32-thread configuration and await
-        // completion before CPU access, input release or the next segment.
+        // The po2-20 synthetic sweep found 256 faster than 32/64/128 and
+        // matched the CPU oracle at each size. Completion still precedes CPU
+        // access, input release, and the next segment.
+        const THREADS: usize = 256;
         self.hal.dispatch(
             &self.kernel,
             &[
@@ -247,8 +248,8 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
             ],
             domain as u64,
             Some((
-                MTLSize::new((domain / 32) as u64, 1, 1),
-                MTLSize::new(32, 1, 1),
+                MTLSize::new((domain / THREADS) as u64, 1, 1),
+                MTLSize::new(THREADS as u64, 1, 1),
             )),
         );
         if std::env::var("RISC0_RV32IM_METAL_CHECK_CPU").as_deref() == Ok("1") {
