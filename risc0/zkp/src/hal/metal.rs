@@ -1472,19 +1472,17 @@ fn compute_launch_params(n_bits: u32, s_bits: u32, c_size: u32) -> (MTLSize, MTL
         grid.height = g_size.div_ceil(block.height);
         grid.depth = c_size as u64;
     } else {
-        // Keep the proven 32-group budget within each column while exposing
-        // all columns to Metal in one launch. The old grid serialized columns
-        // through the kernel's inner loop; the full grid created too many
-        // small threadgroups at po2 20.
+        // Keep the proven 32-group budget. Column parallelism is retained as
+        // a diagnostic while the radix and twiddle kernels are developed.
         let mut grids = 32;
         grid.width = grids.min(s_size.div_ceil(block.width));
         grids /= grid.width;
         grid.height = grids.min(g_size.div_ceil(block.height));
         grids /= grid.height;
-        grid.depth = if std::env::var("RISC0_METAL_NTT_LEGACY_GRID").as_deref() == Ok("1") {
-            grids.min(c_size as u64)
-        } else {
+        grid.depth = if std::env::var("RISC0_METAL_NTT_COLUMN_GRID").as_deref() == Ok("1") {
             c_size as u64
+        } else {
+            grids.min(c_size as u64)
         };
     }
     (grid, block)
