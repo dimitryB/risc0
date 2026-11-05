@@ -14,8 +14,8 @@
 
 //! Poseidon2 recursion over shared Metal buffers. Witness generation and
 //! accumulation use the pinned CPU routines directly on those shared buffers.
-//! Every Metal dispatch completes before returning; CPU access therefore occurs
-//! only after prior GPU writes complete, and later dispatches see CPU writes.
+//! Each GPU-only NTT or Merkle stage completes at its batch boundary. CPU
+//! witness and accumulation access requires that no batch is pending.
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -124,6 +124,7 @@ impl CircuitWitnessGenerator<MetalHalPoseidon2> for MetalCircuitHal {
         data: &BufferImpl<BabyBearElem>,
         global: &BufferImpl<BabyBearElem>,
     ) -> Result<()> {
+        self.hal.assert_no_pending_batch();
         Self::validate_witness(total, ctrl, data, global)?;
         let buffers = RawExecBuffers {
             ctrl: ctrl.as_ptr().cast(),
@@ -142,6 +143,7 @@ impl CircuitWitnessGenerator<MetalHalPoseidon2> for MetalCircuitHal {
         host_data: Vec<BabyBearElem>,
         host_global: Vec<BabyBearElem>,
     ) -> Result<()> {
+        self.hal.assert_no_pending_batch();
         ensure!(
             data.size() == host_data.len() && global.size() == host_global.len(),
             "invalid host witness lengths"
@@ -163,6 +165,7 @@ impl CircuitAccumulator<MetalHalPoseidon2> for MetalCircuitHal {
         mix: &BufferImpl<BabyBearElem>,
         accum: &BufferImpl<BabyBearElem>,
     ) -> Result<()> {
+        self.hal.assert_no_pending_batch();
         Self::validate_witness(total, ctrl, data, global)?;
         ensure!(
             work <= total && mix.size() == CircuitImpl::MIX_SIZE,
@@ -236,6 +239,7 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
             po2,
             domain,
             completed_dispatches = self.hal.completed_dispatches(),
+            completed_command_buffers = self.hal.completed_command_buffers(),
             "Poseidon2 recursion Metal constraint check completed"
         );
     }

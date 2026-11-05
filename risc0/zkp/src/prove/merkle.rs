@@ -105,11 +105,10 @@ impl<H: Hal> MerkleTreeProver<H> {
         let params = MerkleTreeParams::new(rows, cols, queries);
         // Allocate nodes
         let nodes = hal.alloc_digest("nodes", rows * 2);
-        // hash each column
-        hal.hash_rows(&nodes.slice(rows, rows), matrix);
-        // For each layer, hash up the layer below
+        // Hash each row and every level in dispatch order, then wait before
+        // the root is read on the CPU.
         scope!("hash_fold", {
-            hal.hash_fold_tree(&nodes, params.layers);
+            hal.hash_tree(&nodes, matrix, rows, params.layers);
         });
         // ROCm: the root and the top layer (written by `commit`) in one download: nodes[1..2 *
         // top_size) holds both (root at 1, top layer at top_size..2 * top_size).

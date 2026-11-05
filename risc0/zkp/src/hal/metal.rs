@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap},
     ffi::c_void,
     fmt::Debug,
@@ -25,8 +25,9 @@ use std::{
 
 use metal::objc::{sel, sel_impl};
 use metal::{
-    Buffer as MetalBuffer, CommandQueue, ComputeCommandEncoderRef, ComputePipelineDescriptor,
-    Device, MTLArgumentBuffersTier, MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
+    Buffer as MetalBuffer, CommandBuffer, CommandQueue, ComputeCommandEncoderRef,
+    ComputePipelineDescriptor, Device, MTLArgumentBuffersTier, MTLCommandBufferStatus,
+    MTLResourceOptions, MTLSize,
 };
 use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use rayon::prelude::*;
@@ -213,6 +214,8 @@ pub struct MetalHal<Hash: MetalHash + ?Sized> {
     kernels: HashMap<String, ComputePipelineDescriptor>,
     hash: Option<Box<Hash>>,
     completed_dispatches: Cell<u64>,
+    completed_command_buffers: Cell<u64>,
+    batch: RefCell<Option<MetalBatch>>,
     _lock: ReentrantMutexGuard<'static, ()>,
 }
 
@@ -223,6 +226,7 @@ pub type MetalHalPoseidon2 = MetalHal<MetalHashPoseidon2>;
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct MetalKernelStats {
     pub commands: u64,
+    pub command_buffers: u64,
     pub gpu_seconds: f64,
     pub dispatch_wall_seconds: f64,
     pub pipeline_seconds: f64,
@@ -230,6 +234,25 @@ pub struct MetalKernelStats {
     pub thread_execution_width: u64,
     pub max_total_threads_per_threadgroup: u64,
     pub static_threadgroup_memory_length: u64,
+}
+
+#[derive(Debug)]
+struct BatchedDispatch {
+    name: String,
+    stage: &'static str,
+    pipeline_seconds: f64,
+    thread_execution_width: u64,
+    max_total_threads_per_threadgroup: u64,
+    static_threadgroup_memory_length: u64,
+}
+
+#[derive(Debug)]
+struct MetalBatch {
+    label: &'static str,
+    command_buffer: CommandBuffer,
+    started: Instant,
+    dispatches: Vec<BatchedDispatch>,
+    retained_buffers: Vec<Arc<TrackedBuffer>>,
 }
 
 thread_local! {
@@ -273,10 +296,11 @@ pub fn metal_gpu_stats_since(
                 return None;
             }
             if let Some(then) = before.get(&name) {
-                if now.commands == then.commands {
+                if now.commands == then.commands && now.command_buffers == then.command_buffers {
                     return None;
                 }
                 now.commands -= then.commands;
+                now.command_buffers -= then.command_buffers;
                 now.gpu_seconds -= then.gpu_seconds;
                 now.dispatch_wall_seconds -= then.dispatch_wall_seconds;
                 now.pipeline_seconds -= then.pipeline_seconds;
@@ -288,7 +312,7 @@ pub fn metal_gpu_stats_since(
 }
 
 #[derive(Debug)]
-struct TrackedBuffer(MetalBuffer);
+pub struct TrackedBuffer(MetalBuffer);
 
 impl TrackedBuffer {
     pub fn new(buffer: MetalBuffer) -> Self {
@@ -319,6 +343,7 @@ pub enum KernelArg<'a> {
     Null,
     Buffer {
         buffer: &'a MetalBuffer,
+        keep_alive: &'a Arc<TrackedBuffer>,
         offset: u64,
     },
     Integer(u32),
@@ -411,6 +436,7 @@ impl<T> BufferImpl<T> {
         let offset = self.byte_offset(0);
         KernelArg::Buffer {
             buffer: &self.buffer.0,
+            keep_alive: &self.buffer,
             offset: offset as u64,
         }
     }
@@ -419,6 +445,7 @@ impl<T> BufferImpl<T> {
         let offset = self.byte_offset(offset);
         KernelArg::Buffer {
             buffer: &self.buffer.0,
+            keep_alive: &self.buffer,
             offset: offset as u64,
         }
     }
@@ -556,6 +583,8 @@ impl<MH: MetalHash> MetalHal<MH> {
             kernels,
             hash: None,
             completed_dispatches: Cell::new(0),
+            completed_command_buffers: Cell::new(0),
+            batch: RefCell::new(None),
             _lock: lock,
         };
         hal.hash = Some(Box::new(MH::new(&hal)));
@@ -566,6 +595,101 @@ impl<MH: MetalHash> MetalHal<MH> {
     /// CPU fallback operations do not increment this count.
     pub fn completed_dispatches(&self) -> u64 {
         self.completed_dispatches.get()
+    }
+
+    pub fn completed_command_buffers(&self) -> u64 {
+        self.completed_command_buffers.get()
+    }
+
+    /// CPU users of shared buffers must only run after the stage boundary.
+    pub fn assert_no_pending_batch(&self) {
+        assert!(
+            self.batch.borrow().is_none(),
+            "CPU access during a Metal batch"
+        );
+    }
+
+    /// Encode a GPU-only stage in one command buffer. Callers must finish the
+    /// scope before any CPU access to the stage's outputs or input release.
+    pub fn with_batch<R>(&self, label: &'static str, f: impl FnOnce() -> R) -> R {
+        if self.batch.borrow().is_some() {
+            return f();
+        }
+        metal::objc::rc::autoreleasepool(|| {
+            let command_buffer = self.cmd_queue.new_command_buffer().to_owned();
+            command_buffer.set_label(label);
+            *self.batch.borrow_mut() = Some(MetalBatch {
+                label,
+                command_buffer,
+                started: Instant::now(),
+                dispatches: Vec::new(),
+                retained_buffers: Vec::new(),
+            });
+            let result = f();
+            self.finish_batch();
+            result
+        })
+    }
+
+    fn finish_batch(&self) {
+        let batch = self.batch.borrow_mut().take().unwrap();
+        if batch.dispatches.is_empty() {
+            return;
+        }
+        batch.command_buffer.commit();
+        batch.command_buffer.wait_until_completed();
+        let status = batch.command_buffer.status();
+        assert_eq!(
+            status,
+            MTLCommandBufferStatus::Completed,
+            "Metal batch {} failed (command status {status:?})",
+            batch.label
+        );
+        let gpu_start: f64 = unsafe { metal::objc::msg_send![batch.command_buffer, GPUStartTime] };
+        let gpu_end: f64 = unsafe { metal::objc::msg_send![batch.command_buffer, GPUEndTime] };
+        let valid_gpu_time = gpu_start > 0.0 && gpu_end > gpu_start;
+        let gpu_seconds = if valid_gpu_time {
+            gpu_end - gpu_start
+        } else {
+            0.0
+        };
+        let dispatch_wall_seconds = batch.started.elapsed().as_secs_f64();
+        let stage = batch.dispatches[0].stage;
+        assert!(batch
+            .dispatches
+            .iter()
+            .all(|dispatch| dispatch.stage == stage));
+        let segment = PROFILE_SEGMENT.with(Cell::get);
+        let mut all = profile_counters().lock().unwrap();
+        for dispatch in &batch.dispatches {
+            let stats = all.entry(format!("{stage}/{}", dispatch.name)).or_default();
+            stats.commands += 1;
+            stats.pipeline_seconds += dispatch.pipeline_seconds;
+            stats.thread_execution_width = dispatch.thread_execution_width;
+            stats.max_total_threads_per_threadgroup = dispatch.max_total_threads_per_threadgroup;
+            stats.static_threadgroup_memory_length = dispatch.static_threadgroup_memory_length;
+        }
+        let batch_name = format!("batch_{}", batch.label);
+        let stats = all.entry(format!("{stage}/{batch_name}")).or_default();
+        stats.command_buffers += 1;
+        stats.gpu_seconds += gpu_seconds;
+        stats.dispatch_wall_seconds += dispatch_wall_seconds;
+        stats.invalid_gpu_timestamps += u64::from(!valid_gpu_time);
+        drop(all);
+        if std::env::var_os("RISC0_METAL_GPU_PROFILE").is_some() {
+            eprintln!(
+                "[metal_gpu] kernel={batch_name} segment={} count={} gpu_ms={:.3} dispatch_wall_ms={:.3} pipeline_ms={:.3} thread_execution_width=0 max_total_threads_per_threadgroup=0 static_threadgroup_memory_length=0",
+                segment.map(i64::from).unwrap_or(-1),
+                batch.dispatches.len(),
+                if valid_gpu_time { gpu_seconds * 1000.0 } else { -1.0 },
+                dispatch_wall_seconds * 1000.0,
+                batch.dispatches.iter().map(|dispatch| dispatch.pipeline_seconds).sum::<f64>() * 1000.0,
+            );
+        }
+        self.completed_dispatches
+            .set(self.completed_dispatches.get() + batch.dispatches.len() as u64);
+        self.completed_command_buffers
+            .set(self.completed_command_buffers.get() + 1);
     }
 
     pub fn dispatch_by_name(&self, name: &str, args: &[KernelArg], count: u64) {
@@ -605,6 +729,61 @@ impl<MH: MetalHash> MetalHal<MH> {
         if empty_grid {
             return;
         }
+        if self.batch.borrow().is_some() {
+            let mut active = self.batch.borrow_mut();
+            let batch = active.as_mut().unwrap();
+            let kernel_name = kernel.compute_function().unwrap().name();
+            let cmd_encoder = batch.command_buffer.new_compute_command_encoder();
+            callback(cmd_encoder);
+            let pipeline_started = Instant::now();
+            let pipeline_state = self
+                .device
+                .new_compute_pipeline_state_with_function(kernel.compute_function().unwrap())
+                .unwrap();
+            let pipeline_seconds = pipeline_started.elapsed().as_secs_f64();
+            cmd_encoder.set_compute_pipeline_state(&pipeline_state);
+            for (index, arg) in args.iter().enumerate() {
+                match arg {
+                    KernelArg::Buffer {
+                        buffer,
+                        offset,
+                        keep_alive,
+                    } => {
+                        batch.retained_buffers.push((*keep_alive).clone());
+                        cmd_encoder.set_buffer(index as u64, Some(buffer), *offset);
+                    }
+                    KernelArg::Integer(value) => cmd_encoder.set_bytes(
+                        index as u64,
+                        mem::size_of_val(value) as u64,
+                        value.to_le_bytes().as_ptr() as *const c_void,
+                    ),
+                    KernelArg::Null => cmd_encoder.set_buffer(index as u64, None, 0),
+                }
+            }
+            match opts {
+                Some((groups, threads)) => cmd_encoder.dispatch_thread_groups(groups, threads),
+                None => cmd_encoder.dispatch_threads(
+                    MTLSize::new(count, 1, 1),
+                    MTLSize::new(pipeline_state.max_total_threads_per_threadgroup(), 1, 1),
+                ),
+            }
+            cmd_encoder.end_encoding();
+            let stage = if PROFILE_SEGMENT.with(Cell::get).is_some() {
+                "segment"
+            } else {
+                "recursion"
+            };
+            batch.dispatches.push(BatchedDispatch {
+                name: kernel_name.to_owned(),
+                stage,
+                pipeline_seconds,
+                thread_execution_width: pipeline_state.thread_execution_width(),
+                max_total_threads_per_threadgroup: pipeline_state
+                    .max_total_threads_per_threadgroup(),
+                static_threadgroup_memory_length: pipeline_state.static_threadgroup_memory_length(),
+            });
+            return;
+        }
         // Metal returns autoreleased command buffers and encoders. Drain them
         // after each synchronous completion so completed commands cannot retain
         // proof buffers until a process-wide or thread-local pool is drained.
@@ -627,7 +806,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             cmd_encoder.set_compute_pipeline_state(&pipeline_state);
             for (index, arg) in args.iter().enumerate() {
                 match arg {
-                    KernelArg::Buffer { buffer, offset } => {
+                    KernelArg::Buffer { buffer, offset, .. } => {
                         cmd_encoder.set_buffer(index as u64, Some(buffer), *offset);
                     }
                     KernelArg::Integer(value) => {
@@ -689,6 +868,7 @@ impl<MH: MetalHash> MetalHal<MH> {
                 let mut all = profile_counters().lock().unwrap();
                 let stats = all.entry(name).or_default();
                 stats.commands += 1;
+                stats.command_buffers += 1;
                 stats.gpu_seconds += gpu_seconds;
                 stats.dispatch_wall_seconds += dispatch_wall_seconds;
                 stats.pipeline_seconds += pipeline_seconds;
@@ -713,6 +893,8 @@ impl<MH: MetalHash> MetalHal<MH> {
             }
             self.completed_dispatches
                 .set(self.completed_dispatches.get() + 1);
+            self.completed_command_buffers
+                .set(self.completed_command_buffers.get() + 1);
             tracing::debug!(kernel = kernel_name, count, "Metal dispatch completed");
         });
     }
@@ -781,45 +963,73 @@ impl<MH: MetalHash> Hal for MetalHal<MH> {
         count: usize,
         expand_bits: usize,
     ) {
-        scope!("batch_expand", {
-            tracing::debug!(
-                "output: {}, input: {}, count: {count}",
-                output.size(),
-                input.size()
-            );
-            let out_size = output.size() / count;
-            let in_size = input.size() / count;
-            let expand_bits = log2_ceil(out_size / in_size);
-            assert_eq!(output.size(), out_size * count);
-            assert_eq!(input.size(), in_size * count);
-            assert_eq!(out_size, in_size * (1 << expand_bits));
-            let args = &[
-                output.as_arg(),
-                input.as_arg(),
-                KernelArg::Integer(count as u32),
-                KernelArg::Integer(out_size as u32),
-                KernelArg::Integer(in_size as u32),
-                KernelArg::Integer(expand_bits as u32),
-            ];
-            self.dispatch_by_name("batch_expand", args, out_size as u64);
-        });
-
-        scope!("batch_evaluate_ntt", {
-            tracing::debug!(
-                "output: {}, count: {count}, expand_bits: {expand_bits}",
-                output.size()
-            );
-            let row_size = output.size() / count;
-            assert_eq!(row_size * count, output.size());
-            let n_bits = log2_ceil(row_size);
-            assert_eq!(row_size, 1 << n_bits);
-            assert!(n_bits >= expand_bits);
-            assert!(n_bits < Self::Elem::MAX_ROU_PO2);
-            let rou = self.copy_from_elem("rou", Self::Elem::ROU_FWD);
-            let kernel = self.kernels.get("multi_ntt_fwd_step").unwrap();
-            for s_bits in 1 + expand_bits..=n_bits {
+        self.with_batch("transforms", || {
+            scope!("batch_expand", {
+                tracing::debug!(
+                    "output: {}, input: {}, count: {count}",
+                    output.size(),
+                    input.size()
+                );
+                let out_size = output.size() / count;
+                let in_size = input.size() / count;
+                let expand_bits = log2_ceil(out_size / in_size);
+                assert_eq!(output.size(), out_size * count);
+                assert_eq!(input.size(), in_size * count);
+                assert_eq!(out_size, in_size * (1 << expand_bits));
                 let args = &[
                     output.as_arg(),
+                    input.as_arg(),
+                    KernelArg::Integer(count as u32),
+                    KernelArg::Integer(out_size as u32),
+                    KernelArg::Integer(in_size as u32),
+                    KernelArg::Integer(expand_bits as u32),
+                ];
+                self.dispatch_by_name("batch_expand", args, out_size as u64);
+            });
+
+            scope!("batch_evaluate_ntt", {
+                tracing::debug!(
+                    "output: {}, count: {count}, expand_bits: {expand_bits}",
+                    output.size()
+                );
+                let row_size = output.size() / count;
+                assert_eq!(row_size * count, output.size());
+                let n_bits = log2_ceil(row_size);
+                assert_eq!(row_size, 1 << n_bits);
+                assert!(n_bits >= expand_bits);
+                assert!(n_bits < Self::Elem::MAX_ROU_PO2);
+                let rou = self.copy_from_elem("rou", Self::Elem::ROU_FWD);
+                let kernel = self.kernels.get("multi_ntt_fwd_step").unwrap();
+                for s_bits in 1 + expand_bits..=n_bits {
+                    let args = &[
+                        output.as_arg(),
+                        rou.as_arg(),
+                        KernelArg::Integer(n_bits as u32),
+                        KernelArg::Integer(s_bits as u32),
+                        KernelArg::Integer(count as u32),
+                    ];
+                    let params = compute_launch_params(n_bits as u32, s_bits as u32, count as u32);
+                    self.dispatch(kernel, args, count as u64, Some(params));
+                }
+            });
+        });
+    }
+
+    fn batch_interpolate_ntt(&self, io: &Self::Buffer<Self::Elem>, count: usize) {
+        self.with_batch("transforms", || {
+            scope!("batch_interpolate_ntt");
+            tracing::debug!("io: {}, count: {count}", io.size());
+            let row_size = io.size() / count;
+            assert_eq!(row_size * count, io.size());
+            let n_bits = log2_ceil(row_size);
+            assert_eq!(row_size, 1 << n_bits);
+            assert!(n_bits < Self::Elem::MAX_ROU_PO2);
+
+            let rou = self.copy_from_elem("rou", Self::Elem::ROU_REV);
+            let kernel = self.kernels.get("multi_ntt_rev_step").unwrap();
+            for s_bits in (1..=n_bits).rev() {
+                let args = &[
+                    io.as_arg(),
                     rou.as_arg(),
                     KernelArg::Integer(n_bits as u32),
                     KernelArg::Integer(s_bits as u32),
@@ -828,35 +1038,43 @@ impl<MH: MetalHash> Hal for MetalHal<MH> {
                 let params = compute_launch_params(n_bits as u32, s_bits as u32, count as u32);
                 self.dispatch(kernel, args, count as u64, Some(params));
             }
+
+            let norm = self.copy_from_elem("norm", &[Self::Elem::new(row_size as u32).inv()]);
+            let args = &[io.as_arg(), norm.as_arg()];
+            self.dispatch_by_name("eltwise_mul_factor_fp", args, io.size() as u64);
         });
     }
 
-    fn batch_interpolate_ntt(&self, io: &Self::Buffer<Self::Elem>, count: usize) {
-        scope!("batch_interpolate_ntt");
-        tracing::debug!("io: {}, count: {count}", io.size());
-        let row_size = io.size() / count;
-        assert_eq!(row_size * count, io.size());
-        let n_bits = log2_ceil(row_size);
-        assert_eq!(row_size, 1 << n_bits);
-        assert!(n_bits < Self::Elem::MAX_ROU_PO2);
+    fn batch_interpolate_ntt_zk_shift(&self, io: &Self::Buffer<Self::Elem>, count: usize) {
+        self.with_batch("transforms", || {
+            self.batch_interpolate_ntt(io, count);
+            self.zk_shift(io, count);
+        });
+    }
 
-        let rou = self.copy_from_elem("rou", Self::Elem::ROU_REV);
-        let kernel = self.kernels.get("multi_ntt_rev_step").unwrap();
-        for s_bits in (1..=n_bits).rev() {
-            let args = &[
-                io.as_arg(),
-                rou.as_arg(),
-                KernelArg::Integer(n_bits as u32),
-                KernelArg::Integer(s_bits as u32),
-                KernelArg::Integer(count as u32),
-            ];
-            let params = compute_launch_params(n_bits as u32, s_bits as u32, count as u32);
-            self.dispatch(kernel, args, count as u64, Some(params));
-        }
+    fn batch_interpolate_ntt_zk_shift_from(
+        &self,
+        dst: &Self::Buffer<Self::Elem>,
+        src: &Self::Buffer<Self::Elem>,
+        count: usize,
+    ) {
+        self.with_batch("transforms", || {
+            self.eltwise_copy_elem(dst, src);
+            self.batch_interpolate_ntt_zk_shift(dst, count);
+        });
+    }
 
-        let norm = self.copy_from_elem("norm", &[Self::Elem::new(row_size as u32).inv()]);
-        let args = &[io.as_arg(), norm.as_arg()];
-        self.dispatch_by_name("eltwise_mul_factor_fp", args, io.size() as u64);
+    fn hash_tree(
+        &self,
+        nodes: &Self::Buffer<Digest>,
+        matrix: &Self::Buffer<Self::Elem>,
+        rows: usize,
+        layers: usize,
+    ) {
+        self.with_batch("merkle", || {
+            self.hash_rows(&nodes.slice(rows, rows), matrix);
+            self.hash_fold_tree(nodes, layers);
+        });
     }
 
     fn batch_evaluate_any(
@@ -1156,7 +1374,66 @@ mod tests {
     use test_log::test;
 
     use super::{MetalHalPoseidon2, MetalHalSha256};
-    use crate::hal::testutil;
+    use crate::{
+        field::baby_bear::BabyBearElem,
+        hal::{cpu::CpuHal, testutil, Buffer, Hal},
+    };
+
+    #[test]
+    fn batched_ntt_offsets_sentinels_and_reuse() {
+        let gpu = MetalHalSha256::new();
+        let cpu = CpuHal::new(gpu.get_hash_suite().clone());
+        let sentinel = BabyBearElem::new(123);
+        let values: Vec<_> = (0..48).map(|i| BabyBearElem::new(i + 1)).collect();
+        let mut padded = vec![sentinel; 3];
+        padded.extend_from_slice(&values);
+        padded.extend_from_slice(&[sentinel; 3]);
+        let gpu_storage = gpu.copy_from_elem("ntt", &padded);
+        let cpu_storage = cpu.copy_from_elem("ntt", &padded);
+        let gpu_io = gpu_storage.slice(3, 48);
+        let cpu_io = cpu_storage.slice(3, 48);
+        for _ in 0..2 {
+            let buffers_before = gpu.completed_command_buffers();
+            let dispatches_before = gpu.completed_dispatches();
+            gpu.batch_interpolate_ntt(&gpu_io, 3);
+            cpu.batch_interpolate_ntt(&cpu_io, 3);
+            assert_eq!(gpu.completed_command_buffers() - buffers_before, 1);
+            assert_eq!(gpu.completed_dispatches() - dispatches_before, 5);
+            assert_eq!(gpu_storage.to_vec(), cpu_storage.to_vec());
+            assert_eq!(&gpu_storage.to_vec()[..3], &[sentinel; 3]);
+            assert_eq!(&gpu_storage.to_vec()[51..], &[sentinel; 3]);
+        }
+    }
+
+    #[test]
+    fn batched_merkle_offsets_and_boundaries() {
+        let gpu = MetalHalSha256::new();
+        let cpu = CpuHal::new(gpu.get_hash_suite().clone());
+        let sentinel = crate::core::digest::Digest::from([123; 8]);
+        for layers in [0, 1, 3, 6] {
+            let rows = 1 << layers;
+            let values: Vec<_> = (0..rows * 3)
+                .map(|i| BabyBearElem::new(i as u32 + 1))
+                .collect();
+            let mut matrix = vec![BabyBearElem::new(123); 2];
+            matrix.extend_from_slice(&values);
+            matrix.extend_from_slice(&[BabyBearElem::new(123); 2]);
+            let gpu_matrix = gpu.copy_from_elem("matrix", &matrix).slice(2, rows * 3);
+            let cpu_matrix = cpu.copy_from_elem("matrix", &matrix).slice(2, rows * 3);
+            let nodes = vec![sentinel; rows * 2 + 6];
+            let gpu_storage = gpu.copy_from_digest("nodes", &nodes);
+            let cpu_storage = cpu.copy_from_digest("nodes", &nodes);
+            let buffers_before = gpu.completed_command_buffers();
+            let dispatches_before = gpu.completed_dispatches();
+            gpu.hash_tree(&gpu_storage.slice(3, rows * 2), &gpu_matrix, rows, layers);
+            cpu.hash_tree(&cpu_storage.slice(3, rows * 2), &cpu_matrix, rows, layers);
+            assert_eq!(gpu.completed_command_buffers() - buffers_before, 1);
+            assert_eq!(gpu.completed_dispatches() - dispatches_before, 1 + layers as u64);
+            assert_eq!(gpu_storage.to_vec(), cpu_storage.to_vec());
+            let full = gpu_storage.to_vec();
+            assert!(full[..3].iter().chain(&full[rows * 2 + 3..]).all(|x| *x == sentinel));
+        }
+    }
 
     #[test]
     fn batch_bit_reverse() {

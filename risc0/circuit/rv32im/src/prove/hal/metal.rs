@@ -57,6 +57,7 @@ pub struct MetalRv32imStats {
     pub completed_constraint_checks: u64,
     pub evaluation_points: u64,
     pub completed_dispatches: u64,
+    pub completed_command_buffers: u64,
     pub cpu_witness_calls: u64,
     pub cpu_differential_checks: u64,
     pub cpu_accumulation_calls: u64,
@@ -73,6 +74,13 @@ pub fn metal_rv32im_stats() -> MetalRv32imStats {
                 .iter()
                 .filter_map(Weak::upgrade)
                 .map(|h| h.completed_dispatches())
+                .sum()
+        }),
+        completed_command_buffers: HALS.with(|hals| {
+            hals.borrow()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .map(|h| h.completed_command_buffers())
                 .sum()
         }),
     }

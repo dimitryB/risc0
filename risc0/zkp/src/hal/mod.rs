@@ -266,6 +266,18 @@ pub trait Hal {
         }
     }
 
+    /// Hash rows and all Merkle levels before the caller reads the root.
+    fn hash_tree(
+        &self,
+        nodes: &Self::Buffer<Digest>,
+        matrix: &Self::Buffer<Self::Elem>,
+        rows: usize,
+        layers: usize,
+    ) {
+        self.hash_rows(&nodes.slice(rows, rows), matrix);
+        self.hash_fold_tree(nodes, layers);
+    }
+
     fn gather_sample(
         &self,
         dst: &Self::Buffer<Self::Elem>,
