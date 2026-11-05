@@ -43,7 +43,7 @@ use std::{
 const SOURCE: &str = include_str!(env!("RV32IM_METAL_SOURCE"));
 const EVALFAST_SOURCE: &str = include_str!(env!("RV32IM_EVALFAST_METAL_SOURCE"));
 fn evalfast_enabled() -> bool {
-    std::env::var("RISC0_RV32IM_EVALFAST").as_deref() == Ok("1")
+    std::env::var("RISC0_RV32IM_TAIL_SPLIT").as_deref() != Ok("1")
 }
 static CPU_CHECKS: AtomicU64 = AtomicU64::new(0);
 static CHECKS: AtomicU64 = AtomicU64::new(0);
