@@ -260,78 +260,81 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
         let factors = self
             .hal
             .copy_from_elem("rv32im_normalization", &normalization);
-        // Synchronous completion precedes CPU access, input release, and the
-        // next segment. The separate phases preserve the CPU oracle output.
+        // The command buffer retains its inputs until eval_check_dep. A later
+        // segment may write only its distinct witness buffer set meanwhile.
         const THREADS: usize = 256;
-        if self.evalfast {
-            let table = self.hal.alloc_extelem("rv32im_evalfast_table", 627);
-            let scratch = self.hal.alloc_elem("rv32im_evalfast_scratch", domain * 4);
-            self.hal.dispatch(
-                &self.kernels[0],
-                &[
-                    powers.as_arg(),
-                    globals[GLOBAL_OUT].as_arg(),
-                    globals[GLOBAL_MIX].as_arg(),
-                    table.as_arg(),
-                ],
-                1,
-                Some((MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1))),
-            );
-            self.hal.dispatch(
-                &self.kernels[1],
-                &[
-                    check.as_arg(),
-                    groups[REGISTER_GROUP_DATA].as_arg(),
-                    groups[REGISTER_GROUP_ACCUM].as_arg(),
-                    globals[GLOBAL_MIX].as_arg(),
-                    globals[GLOBAL_OUT].as_arg(),
-                    table.as_arg(),
-                    scratch.as_arg(),
-                    KernelArg::Integer(domain as u32),
-                ],
-                (2 * domain) as u64,
-                Some((
-                    MTLSize::new((2 * domain / THREADS) as u64, 1, 1),
-                    MTLSize::new(THREADS as u64, 1, 1),
-                )),
-            );
-            self.hal.dispatch(
-                &self.kernels[2],
-                &[
-                    check.as_arg(),
-                    scratch.as_arg(),
-                    factors.as_arg(),
-                    KernelArg::Integer(domain as u32),
-                ],
-                domain as u64,
-                Some((
-                    MTLSize::new((domain / THREADS) as u64, 1, 1),
-                    MTLSize::new(THREADS as u64, 1, 1),
-                )),
-            );
-        } else {
-            self.hal.dispatch(
-                &self.kernels[0],
-                &[
-                    check.as_arg(),
-                    groups[REGISTER_GROUP_CODE].as_arg(),
-                    groups[REGISTER_GROUP_DATA].as_arg(),
-                    groups[REGISTER_GROUP_ACCUM].as_arg(),
-                    globals[GLOBAL_MIX].as_arg(),
-                    globals[GLOBAL_OUT].as_arg(),
-                    powers.as_arg(),
-                    factors.as_arg(),
-                    KernelArg::Integer(po2 as u32),
-                    KernelArg::Integer(domain as u32),
-                ],
-                domain as u64,
-                Some((
-                    MTLSize::new((domain / THREADS) as u64, 1, 1),
-                    MTLSize::new(THREADS as u64, 1, 1),
-                )),
-            );
-        }
+        self.hal.with_deferred_batch("rv32im_eval_check", || {
+            if self.evalfast {
+                let table = self.hal.alloc_extelem("rv32im_evalfast_table", 627);
+                let scratch = self.hal.alloc_elem("rv32im_evalfast_scratch", domain * 4);
+                self.hal.dispatch(
+                    &self.kernels[0],
+                    &[
+                        powers.as_arg(),
+                        globals[GLOBAL_OUT].as_arg(),
+                        globals[GLOBAL_MIX].as_arg(),
+                        table.as_arg(),
+                    ],
+                    1,
+                    Some((MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1))),
+                );
+                self.hal.dispatch(
+                    &self.kernels[1],
+                    &[
+                        check.as_arg(),
+                        groups[REGISTER_GROUP_DATA].as_arg(),
+                        groups[REGISTER_GROUP_ACCUM].as_arg(),
+                        globals[GLOBAL_MIX].as_arg(),
+                        globals[GLOBAL_OUT].as_arg(),
+                        table.as_arg(),
+                        scratch.as_arg(),
+                        KernelArg::Integer(domain as u32),
+                    ],
+                    (2 * domain) as u64,
+                    Some((
+                        MTLSize::new((2 * domain / THREADS) as u64, 1, 1),
+                        MTLSize::new(THREADS as u64, 1, 1),
+                    )),
+                );
+                self.hal.dispatch(
+                    &self.kernels[2],
+                    &[
+                        check.as_arg(),
+                        scratch.as_arg(),
+                        factors.as_arg(),
+                        KernelArg::Integer(domain as u32),
+                    ],
+                    domain as u64,
+                    Some((
+                        MTLSize::new((domain / THREADS) as u64, 1, 1),
+                        MTLSize::new(THREADS as u64, 1, 1),
+                    )),
+                );
+            } else {
+                self.hal.dispatch(
+                    &self.kernels[0],
+                    &[
+                        check.as_arg(),
+                        groups[REGISTER_GROUP_CODE].as_arg(),
+                        groups[REGISTER_GROUP_DATA].as_arg(),
+                        groups[REGISTER_GROUP_ACCUM].as_arg(),
+                        globals[GLOBAL_MIX].as_arg(),
+                        globals[GLOBAL_OUT].as_arg(),
+                        powers.as_arg(),
+                        factors.as_arg(),
+                        KernelArg::Integer(po2 as u32),
+                        KernelArg::Integer(domain as u32),
+                    ],
+                    domain as u64,
+                    Some((
+                        MTLSize::new((domain / THREADS) as u64, 1, 1),
+                        MTLSize::new(THREADS as u64, 1, 1),
+                    )),
+                );
+            }
+        });
         if std::env::var("RISC0_RV32IM_METAL_CHECK_CPU").as_deref() == Ok("1") {
+            self.hal.wait_deferred_batch();
             // All GPU writes completed above. The shared buffers remain alive
             // and immutable throughout these CPU oracle reads; no extra trace
             // copies or second HAL are needed.
@@ -367,6 +370,9 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
         CHECKS.fetch_add(1, Ordering::Relaxed);
         POINTS.fetch_add(domain as u64, Ordering::Relaxed);
         tracing::info!(po2, domain, "RV32IM Metal constraint check completed");
+    }
+    fn eval_check_dep(&self) {
+        self.hal.wait_deferred_batch();
     }
     fn accumulate(
         &self,

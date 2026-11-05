@@ -32,6 +32,14 @@ use risc0_core::scope;
 
 static VERBOSE: LazyLock<bool> = LazyLock::new(|| std::env::var("RISC0_VERBOSE").is_ok());
 
+fn metal_pipeline_enabled() -> bool {
+    cfg!(all(
+        feature = "metal",
+        target_os = "macos",
+        target_arch = "aarch64"
+    )) && std::env::var("RISC0_SEGMENT_PIPELINE").as_deref() != Ok("0")
+}
+
 /// Free the host preflight trace (~124 MB at po2=20) after the eval_check launch. On CUDA and
 /// ROCm, on a background thread: inline it holds up the next segment by 10-20 ms with the GPU
 /// idle (on ROCm eval_check has finished by then, so it is all on the critical path). The
@@ -52,7 +60,7 @@ use risc0_zkp::{
     core::digest::Digest,
     field::Elem as _,
     hal::{Buffer, CircuitHal, Hal},
-    prove::{poly_group::PolyGroup, Prover},
+    prove::{poly_group::PolyGroup, DeferredFinalize, Prover},
 };
 
 use super::{
@@ -163,6 +171,9 @@ where
     /// Seal of the segment finished by the previous prove_begin call, returned
     /// by the next prove_begin (or prove_end) to keep the pipelined API.
     pending_seal: RefCell<Option<Seal>>,
+    /// The GPU owns this segment's committed buffers until its deferred
+    /// eval_check finishes; the CPU may fill only the next witness set.
+    pending_finalize: RefCell<Option<DeferredFinalize<H>>>,
 }
 
 impl<H, C, F> SegmentProverImpl<H, C, F>
@@ -178,6 +189,7 @@ where
             cached_code_group: RefCell::new(None),
             cached_fs_seed_digests: RefCell::new(None),
             pending_seal: RefCell::new(None),
+            pending_finalize: RefCell::new(None),
         }
     }
 
@@ -406,6 +418,18 @@ where
         let header = witgen.header(po2, &expected_header);
         let t_witgen = t0.elapsed();
 
+        // Metal eval_check from the previous segment has been executing while
+        // this distinct witness set was filled on the CPU. Complete its GPU
+        // ownership before finalizing that proof or reusing its buffers.
+        let prev_metal_seal = if metal_pipeline_enabled() {
+            self.pending_finalize
+                .borrow_mut()
+                .take()
+                .map(|pending| pending.complete(hal.as_ref(), circuit_hal.as_ref()))
+        } else {
+            None
+        };
+
         let code = &witgen.code.buf;
         let data = &witgen.data.as_ref().expect("witgen.data present").buf;
 
@@ -472,7 +496,11 @@ where
         let global_clone = hal.alloc_elem("global_clone", witgen.global.buf.size());
         hal.eltwise_copy_elem(&global_clone, &witgen.global.buf);
 
-        let prev_seal = self.pending_seal.borrow_mut().take();
+        let prev_seal = if metal_pipeline_enabled() {
+            prev_metal_seal
+        } else {
+            self.pending_seal.borrow_mut().take()
+        };
 
         // Drop witgen BEFORE eval_check launches to free 5 GB of VRAM
         // (witgen.data 3.4 GB + witgen.accum 1.65 GB at po2=22). The eval_check
@@ -504,8 +532,13 @@ where
         // (GPU page faults / invalid proofs), and holding two segments in
         // flight does not fit po2=21 in VRAM. With one in-order queue the GPU
         // work serialized anyway, so the overlap bought ~nothing.
-        let seal = deferred.complete(hal.as_ref(), circuit_hal.as_ref());
-        *self.pending_seal.borrow_mut() = Some(seal);
+        if metal_pipeline_enabled() {
+            assert!(self.pending_finalize.borrow().is_none());
+            *self.pending_finalize.borrow_mut() = Some(deferred);
+        } else {
+            let seal = deferred.complete(hal.as_ref(), circuit_hal.as_ref());
+            *self.pending_seal.borrow_mut() = Some(seal);
+        }
 
         if *VERBOSE {
             eprintln!(
@@ -523,11 +556,25 @@ where
     }
 
     fn reset_pipeline(&self) {
+        if self.pending_finalize.borrow().is_some() {
+            let (_, circuit_hal) = self.get_hal();
+            circuit_hal.eval_check_dep();
+            self.pending_finalize.borrow_mut().take();
+        }
         self.pending_seal.borrow_mut().take();
     }
 
     fn prove_end(&self) -> Result<Seal> {
         scope!("prove_end");
+        if metal_pipeline_enabled() {
+            let pending = self
+                .pending_finalize
+                .borrow_mut()
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("prove_end: no pending finalize"))?;
+            let (hal, circuit_hal) = self.get_hal();
+            return Ok(pending.complete(hal.as_ref(), circuit_hal.as_ref()));
+        }
         self.pending_seal
             .borrow_mut()
             .take()

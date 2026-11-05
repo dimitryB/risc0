@@ -216,6 +216,7 @@ pub struct MetalHal<Hash: MetalHash + ?Sized> {
     completed_dispatches: Cell<u64>,
     completed_command_buffers: Cell<u64>,
     batch: RefCell<Option<MetalBatch>>,
+    deferred_batch: RefCell<Option<MetalBatch>>,
     _lock: ReentrantMutexGuard<'static, ()>,
 }
 
@@ -256,6 +257,7 @@ enum BoundArg {
 #[derive(Debug)]
 struct MetalBatch {
     label: &'static str,
+    segment: Option<u32>,
     command_buffer: CommandBuffer,
     encoder: Option<ComputeCommandEncoder>,
     current_kernel: Option<String>,
@@ -596,6 +598,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             completed_dispatches: Cell::new(0),
             completed_command_buffers: Cell::new(0),
             batch: RefCell::new(None),
+            deferred_batch: RefCell::new(None),
             _lock: lock,
         };
         hal.hash = Some(Box::new(MH::new(&hal)));
@@ -627,32 +630,67 @@ impl<MH: MetalHash> MetalHal<MH> {
             return f();
         }
         metal::objc::rc::autoreleasepool(|| {
-            let command_buffer = self.cmd_queue.new_command_buffer().to_owned();
-            command_buffer.set_label(label);
-            *self.batch.borrow_mut() = Some(MetalBatch {
-                label,
-                command_buffer,
-                encoder: None,
-                current_kernel: None,
-                pipeline_state: None,
-                bound_args: Vec::new(),
-                started: Instant::now(),
-                dispatches: Vec::new(),
-                retained_buffers: Vec::new(),
-            });
+            self.begin_batch(label);
             let result = f();
-            self.finish_batch();
+            self.finish_batch(false);
             result
         })
     }
 
-    fn finish_batch(&self) {
+    /// Commit a stage without waiting. The caller must keep the input set
+    /// GPU-owned until `wait_deferred_batch` has completed it.
+    pub fn with_deferred_batch<R>(&self, label: &'static str, f: impl FnOnce() -> R) -> R {
+        assert!(self.batch.borrow().is_none(), "nested deferred Metal batch");
+        assert!(
+            self.deferred_batch.borrow().is_none(),
+            "previous Metal batch still pending"
+        );
+        metal::objc::rc::autoreleasepool(|| {
+            self.begin_batch(label);
+            let result = f();
+            self.finish_batch(true);
+            result
+        })
+    }
+
+    pub fn wait_deferred_batch(&self) {
+        if let Some(batch) = self.deferred_batch.borrow_mut().take() {
+            self.complete_batch(batch);
+        }
+    }
+
+    fn begin_batch(&self, label: &'static str) {
+        let command_buffer = self.cmd_queue.new_command_buffer().to_owned();
+        command_buffer.set_label(label);
+        *self.batch.borrow_mut() = Some(MetalBatch {
+            label,
+            segment: PROFILE_SEGMENT.with(Cell::get),
+            command_buffer,
+            encoder: None,
+            current_kernel: None,
+            pipeline_state: None,
+            bound_args: Vec::new(),
+            started: Instant::now(),
+            dispatches: Vec::new(),
+            retained_buffers: Vec::new(),
+        });
+    }
+
+    fn finish_batch(&self, deferred: bool) {
         let mut batch = self.batch.borrow_mut().take().unwrap();
         if batch.dispatches.is_empty() {
             return;
         }
         batch.encoder.take().unwrap().end_encoding();
         batch.command_buffer.commit();
+        if deferred {
+            *self.deferred_batch.borrow_mut() = Some(batch);
+        } else {
+            self.complete_batch(batch);
+        }
+    }
+
+    fn complete_batch(&self, batch: MetalBatch) {
         batch.command_buffer.wait_until_completed();
         let status = batch.command_buffer.status();
         assert_eq!(
@@ -675,7 +713,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             .dispatches
             .iter()
             .all(|dispatch| dispatch.stage == stage));
-        let segment = PROFILE_SEGMENT.with(Cell::get);
+        let segment = batch.segment;
         let mut all = profile_counters().lock().unwrap();
         for dispatch in &batch.dispatches {
             let stats = all.entry(format!("{stage}/{}", dispatch.name)).or_default();
@@ -951,6 +989,16 @@ impl<MH: MetalHash> MetalHal<MH> {
                 .set(self.completed_command_buffers.get() + 1);
             tracing::debug!(kernel = kernel_name, count, "Metal dispatch completed");
         });
+    }
+}
+
+impl<Hash: MetalHash + ?Sized> Drop for MetalHal<Hash> {
+    fn drop(&mut self) {
+        // Cancellation may drop the prover before eval_check_dep. Retain every
+        // GPU input until the submitted command buffer has finished.
+        if let Some(batch) = self.deferred_batch.get_mut().take() {
+            batch.command_buffer.wait_until_completed();
+        }
     }
 }
 
