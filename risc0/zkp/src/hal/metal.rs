@@ -67,6 +67,7 @@ pub fn runtime_kernel_source() -> &'static str {
 
 const KERNEL_NAMES: &[&str] = &[
     "batch_expand",
+    "batch_expand_bitrev",
     "eltwise_add_fp",
     "eltwise_copy_fp",
     "eltwise_mul_factor_fp",
@@ -78,7 +79,10 @@ const KERNEL_NAMES: &[&str] = &[
     "mix_poly_coeffs",
     "multi_bit_reverse",
     "multi_ntt_fwd_step",
+    "multi_ntt_fwd_tile",
     "multi_ntt_rev_step",
+    "multi_ntt_rev_tile",
+    "multi_ntt_rev_tile_commit",
     "multi_poly_eval",
     "poseidon2_fold",
     "poseidon2_rows",
@@ -86,6 +90,9 @@ const KERNEL_NAMES: &[&str] = &[
     "sha_rows",
     "zk_shift",
 ];
+
+const NTT_TILE_BITS: usize = 12;
+const NTT_TILE_SIZE: usize = 1 << NTT_TILE_BITS;
 
 // The GPU becomes unstable as the number of concurrent provers grow.
 fn singleton() -> &'static ReentrantMutex<()> {
@@ -215,6 +222,8 @@ pub struct MetalHal<Hash: MetalHash + ?Sized> {
     hash: Option<Box<Hash>>,
     completed_dispatches: Cell<u64>,
     completed_command_buffers: Cell<u64>,
+    ntt_twiddles: RefCell<HashMap<(usize, bool), BufferImpl<BabyBearElem>>>,
+    ntt_commit_scales: RefCell<HashMap<usize, BufferImpl<BabyBearElem>>>,
     batch: RefCell<Option<MetalBatch>>,
     deferred_batch: RefCell<Option<MetalBatch>>,
     _lock: ReentrantMutexGuard<'static, ()>,
@@ -601,6 +610,8 @@ impl<MH: MetalHash> MetalHal<MH> {
             hash: None,
             completed_dispatches: Cell::new(0),
             completed_command_buffers: Cell::new(0),
+            ntt_twiddles: RefCell::new(HashMap::new()),
+            ntt_commit_scales: RefCell::new(HashMap::new()),
             batch: RefCell::new(None),
             deferred_batch: RefCell::new(None),
             _lock: lock,
@@ -617,6 +628,49 @@ impl<MH: MetalHash> MetalHal<MH> {
 
     pub fn completed_command_buffers(&self) -> u64 {
         self.completed_command_buffers.get()
+    }
+
+    /// Stage k occupies [2^(k-1)-1, 2^k-1) in a table resident for this HAL.
+    fn ntt_twiddles(&self, n_bits: usize, forward: bool) -> BufferImpl<BabyBearElem> {
+        if let Some(table) = self.ntt_twiddles.borrow().get(&(n_bits, forward)) {
+            return table.clone();
+        }
+        let roots = if forward {
+            BabyBearElem::ROU_FWD
+        } else {
+            BabyBearElem::ROU_REV
+        };
+        let mut powers = Vec::with_capacity((1 << n_bits) - 1);
+        for stage in 1..=n_bits {
+            let mut power = BabyBearElem::ONE;
+            for _ in 0..(1 << (stage - 1)) {
+                powers.push(power);
+                power *= roots[stage];
+            }
+        }
+        let table = self.copy_from_elem("ntt_twiddles", &powers);
+        self.ntt_twiddles
+            .borrow_mut()
+            .insert((n_bits, forward), table.clone());
+        table
+    }
+
+    /// n^-1 * 3^k for the final inverse-tile write to natural coefficient k.
+    fn ntt_commit_scales(&self, n_bits: usize) -> BufferImpl<BabyBearElem> {
+        if let Some(table) = self.ntt_commit_scales.borrow().get(&n_bits) {
+            return table.clone();
+        }
+        let mut factor = BabyBearElem::new((1 << n_bits) as u32).inv();
+        let mut values = Vec::with_capacity(1 << n_bits);
+        for _ in 0..(1 << n_bits) {
+            values.push(factor);
+            factor *= BabyBearElem::new(3);
+        }
+        let table = self.copy_from_elem("ntt_commit_scales", &values);
+        self.ntt_commit_scales
+            .borrow_mut()
+            .insert(n_bits, table.clone());
+        table
     }
 
     /// CPU users of shared buffers must only run after the stage boundary.
@@ -1065,6 +1119,142 @@ impl<MH: MetalHash> Hal for MetalHal<MH> {
         self.dispatch_by_name("multi_bit_reverse", args, row_size as u64 * count as u64);
     }
 
+    fn has_commit_coeffs_lde(&self, po2: usize) -> bool {
+        (10..=22).contains(&po2)
+    }
+
+    fn commit_coeffs_lde(
+        &self,
+        coeffs: &Self::Buffer<Self::Elem>,
+        evaluated: &Self::Buffer<Self::Elem>,
+        witness: &Self::Buffer<Self::Elem>,
+        count: usize,
+    ) {
+        let row_size = witness.size() / count;
+        assert_eq!(row_size * count, witness.size());
+        assert_eq!(coeffs.size(), witness.size());
+        let n_bits = log2_ceil(row_size);
+        assert_eq!(row_size, 1 << n_bits);
+        let expand_bits = log2_ceil(crate::INV_RATE);
+        assert_eq!(evaluated.size(), witness.size() << expand_bits);
+        assert!(n_bits + expand_bits < Self::Elem::MAX_ROU_PO2);
+
+        if n_bits < NTT_TILE_BITS || std::env::var("RISC0_METAL_NTT_RADIX2").as_deref() == Ok("1") {
+            self.with_batch("transforms", || {
+                self.batch_interpolate_ntt_zk_shift_from(coeffs, witness, count);
+                self.batch_expand_into_evaluate_ntt(evaluated, coeffs, count, expand_bits);
+                self.batch_bit_reverse(coeffs, count);
+            });
+            return;
+        }
+
+        // The first quarter of `evaluated` is scratch until the inverse has
+        // written natural-order coefficients. All dispatches share one stage
+        // command buffer; the witness is never modified.
+        self.with_batch("transforms", || {
+            let scratch = evaluated.slice(0, witness.size());
+            self.eltwise_copy_elem(&scratch, witness);
+            let rev_twiddles = self.ntt_twiddles(n_bits, false);
+            let rev_kernel = self.kernels.get("multi_ntt_rev_step").unwrap();
+            for stage in ((NTT_TILE_BITS + 1)..=n_bits).rev() {
+                let args = &[
+                    scratch.as_arg(),
+                    rev_twiddles.as_arg(),
+                    KernelArg::Integer(n_bits as u32),
+                    KernelArg::Integer(stage as u32),
+                    KernelArg::Integer(count as u32),
+                ];
+                self.dispatch(
+                    rev_kernel,
+                    args,
+                    count as u64,
+                    Some(compute_launch_params(
+                        n_bits as u32,
+                        stage as u32,
+                        count as u32,
+                    )),
+                );
+            }
+            let scales = self.ntt_commit_scales(n_bits);
+            let tile_params = (
+                MTLSize::new((row_size / NTT_TILE_SIZE) as u64, count as u64, 1),
+                MTLSize::new(256, 1, 1),
+            );
+            let args = &[
+                coeffs.as_arg(),
+                scratch.as_arg(),
+                rev_twiddles.as_arg(),
+                scales.as_arg(),
+                KernelArg::Integer(n_bits as u32),
+            ];
+            self.dispatch(
+                self.kernels.get("multi_ntt_rev_tile_commit").unwrap(),
+                args,
+                count as u64,
+                Some(tile_params),
+            );
+
+            let expand_params = (
+                MTLSize::new((row_size / 256) as u64, count as u64, 1),
+                MTLSize::new(256, 1, 1),
+            );
+            let args = &[
+                evaluated.as_arg(),
+                coeffs.as_arg(),
+                KernelArg::Integer(n_bits as u32),
+                KernelArg::Integer(expand_bits as u32),
+            ];
+            self.dispatch(
+                self.kernels.get("batch_expand_bitrev").unwrap(),
+                args,
+                count as u64,
+                Some(expand_params),
+            );
+            let out_bits = n_bits + expand_bits;
+            let fwd_twiddles = self.ntt_twiddles(out_bits, true);
+            let fwd_params = (
+                MTLSize::new(
+                    (row_size * crate::INV_RATE / NTT_TILE_SIZE) as u64,
+                    count as u64,
+                    1,
+                ),
+                MTLSize::new(256, 1, 1),
+            );
+            let args = &[
+                evaluated.as_arg(),
+                fwd_twiddles.as_arg(),
+                KernelArg::Integer(out_bits as u32),
+                KernelArg::Integer((1 + expand_bits) as u32),
+            ];
+            self.dispatch(
+                self.kernels.get("multi_ntt_fwd_tile").unwrap(),
+                args,
+                count as u64,
+                Some(fwd_params),
+            );
+            let fwd_kernel = self.kernels.get("multi_ntt_fwd_step").unwrap();
+            for stage in (NTT_TILE_BITS + 1)..=out_bits {
+                let args = &[
+                    evaluated.as_arg(),
+                    fwd_twiddles.as_arg(),
+                    KernelArg::Integer(out_bits as u32),
+                    KernelArg::Integer(stage as u32),
+                    KernelArg::Integer(count as u32),
+                ];
+                self.dispatch(
+                    fwd_kernel,
+                    args,
+                    count as u64,
+                    Some(compute_launch_params(
+                        out_bits as u32,
+                        stage as u32,
+                        count as u32,
+                    )),
+                );
+            }
+        });
+    }
+
     fn batch_expand_into_evaluate_ntt(
         &self,
         output: &Self::Buffer<Self::Elem>,
@@ -1107,12 +1297,38 @@ impl<MH: MetalHash> Hal for MetalHal<MH> {
                 assert_eq!(row_size, 1 << n_bits);
                 assert!(n_bits >= expand_bits);
                 assert!(n_bits < Self::Elem::MAX_ROU_PO2);
-                let rou = self.copy_from_elem("rou", Self::Elem::ROU_FWD);
-                let kernel = self.kernels.get("multi_ntt_fwd_step").unwrap();
-                for s_bits in 1 + expand_bits..=n_bits {
+                let twiddles = self.ntt_twiddles(n_bits, true);
+                let tiled = n_bits >= NTT_TILE_BITS
+                    && expand_bits < NTT_TILE_BITS
+                    && std::env::var("RISC0_METAL_NTT_RADIX2").as_deref() != Ok("1");
+                if tiled {
                     let args = &[
                         output.as_arg(),
-                        rou.as_arg(),
+                        twiddles.as_arg(),
+                        KernelArg::Integer(n_bits as u32),
+                        KernelArg::Integer((1 + expand_bits) as u32),
+                    ];
+                    let params = (
+                        MTLSize::new((row_size / NTT_TILE_SIZE) as u64, count as u64, 1),
+                        MTLSize::new(256, 1, 1),
+                    );
+                    self.dispatch(
+                        self.kernels.get("multi_ntt_fwd_tile").unwrap(),
+                        args,
+                        count as u64,
+                        Some(params),
+                    );
+                }
+                let kernel = self.kernels.get("multi_ntt_fwd_step").unwrap();
+                for s_bits in (if tiled {
+                    NTT_TILE_BITS + 1
+                } else {
+                    1 + expand_bits
+                })..=n_bits
+                {
+                    let args = &[
+                        output.as_arg(),
+                        twiddles.as_arg(),
                         KernelArg::Integer(n_bits as u32),
                         KernelArg::Integer(s_bits as u32),
                         KernelArg::Integer(count as u32),
@@ -1134,18 +1350,37 @@ impl<MH: MetalHash> Hal for MetalHal<MH> {
             assert_eq!(row_size, 1 << n_bits);
             assert!(n_bits < Self::Elem::MAX_ROU_PO2);
 
-            let rou = self.copy_from_elem("rou", Self::Elem::ROU_REV);
+            let twiddles = self.ntt_twiddles(n_bits, false);
+            let tiled = n_bits >= NTT_TILE_BITS
+                && std::env::var("RISC0_METAL_NTT_RADIX2").as_deref() != Ok("1");
             let kernel = self.kernels.get("multi_ntt_rev_step").unwrap();
-            for s_bits in (1..=n_bits).rev() {
+            for s_bits in ((if tiled { NTT_TILE_BITS + 1 } else { 1 })..=n_bits).rev() {
                 let args = &[
                     io.as_arg(),
-                    rou.as_arg(),
+                    twiddles.as_arg(),
                     KernelArg::Integer(n_bits as u32),
                     KernelArg::Integer(s_bits as u32),
                     KernelArg::Integer(count as u32),
                 ];
                 let params = compute_launch_params(n_bits as u32, s_bits as u32, count as u32);
                 self.dispatch(kernel, args, count as u64, Some(params));
+            }
+            if tiled {
+                let args = &[
+                    io.as_arg(),
+                    twiddles.as_arg(),
+                    KernelArg::Integer(n_bits as u32),
+                ];
+                let params = (
+                    MTLSize::new((row_size / NTT_TILE_SIZE) as u64, count as u64, 1),
+                    MTLSize::new(256, 1, 1),
+                );
+                self.dispatch(
+                    self.kernels.get("multi_ntt_rev_tile").unwrap(),
+                    args,
+                    count as u64,
+                    Some(params),
+                );
             }
 
             let norm = self.copy_from_elem("norm", &[Self::Elem::new(row_size as u32).inv()]);
@@ -1578,6 +1813,11 @@ mod tests {
     #[test]
     fn batch_interpolate_ntt() {
         testutil::batch_interpolate_ntt(MetalHalSha256::new());
+    }
+
+    #[test]
+    fn commit_coeffs_lde() {
+        testutil::commit_coeffs_lde(MetalHalSha256::new());
     }
 
     #[test]
