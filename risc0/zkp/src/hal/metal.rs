@@ -218,6 +218,7 @@ impl MetalHash for MetalHashPoseidon2 {
 pub struct MetalHal<Hash: MetalHash + ?Sized> {
     pub device: Device,
     pub cmd_queue: CommandQueue,
+    overlap_queue: CommandQueue,
     kernels: HashMap<String, ComputePipelineDescriptor>,
     hash: Option<Box<Hash>>,
     completed_dispatches: Cell<u64>,
@@ -267,6 +268,7 @@ enum BoundArg {
 struct MetalBatch {
     label: &'static str,
     segment: Option<u32>,
+    overlap: bool,
     command_buffer: CommandBuffer,
     encoder: Option<ComputeCommandEncoder>,
     current_kernel: Option<String>,
@@ -298,6 +300,11 @@ pub fn with_profile_segment<R>(index: u32, f: impl FnOnce() -> R) -> R {
 
 pub fn current_profile_segment() -> Option<u32> {
     PROFILE_SEGMENT.with(Cell::get)
+}
+
+fn wide_overlap_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("RISC0_SEGMENT_WIDE_OVERLAP").as_deref() != Ok("0"))
 }
 
 fn profile_counters() -> &'static Mutex<BTreeMap<String, MetalKernelStats>> {
@@ -596,6 +603,7 @@ impl<MH: MetalHash> MetalHal<MH> {
                 .expect("system Metal runtime compiler rejected the retained kernel source")
         };
         let cmd_queue = device.new_command_queue();
+        let overlap_queue = device.new_command_queue();
         let mut kernels = HashMap::new();
         for name in KERNEL_NAMES {
             let function = library.get_function(name, None).unwrap();
@@ -606,6 +614,7 @@ impl<MH: MetalHash> MetalHal<MH> {
         let mut hal = Self {
             device,
             cmd_queue,
+            overlap_queue,
             kernels,
             hash: None,
             completed_dispatches: Cell::new(0),
@@ -718,11 +727,28 @@ impl<MH: MetalHash> MetalHal<MH> {
     }
 
     fn begin_batch(&self, label: &'static str) {
-        let command_buffer = self.cmd_queue.new_command_buffer().to_owned();
+        // The previous segment's eval_check reads only its retained buffer set.
+        // The next segment's DATA transforms and Merkle tree use distinct
+        // buffers, so they can finish on another queue before that eval_check
+        // completes. Their batch wait still precedes the CPU read of the root.
+        let overlap = wide_overlap_enabled()
+            && matches!(label, "transforms" | "merkle")
+            && self.deferred_batch.borrow().is_some();
+        let queue = if overlap {
+            &self.overlap_queue
+        } else {
+            &self.cmd_queue
+        };
+        let command_buffer = queue.new_command_buffer().to_owned();
         command_buffer.set_label(label);
+        let segment = PROFILE_SEGMENT.with(Cell::get);
+        if overlap {
+            eprintln!("[metal_pipeline] overlap_submit stage={label} segment={segment:?}");
+        }
         *self.batch.borrow_mut() = Some(MetalBatch {
             label,
-            segment: PROFILE_SEGMENT.with(Cell::get),
+            segment,
+            overlap,
             command_buffer,
             encoder: None,
             current_kernel: None,
@@ -766,6 +792,15 @@ impl<MH: MetalHash> MetalHal<MH> {
             0.0
         };
         let dispatch_wall_seconds = batch.started.elapsed().as_secs_f64();
+        if batch.overlap {
+            eprintln!(
+                "[metal_pipeline] overlap_complete stage={} segment={:?} gpu_ms={:.3} wall_ms={:.3}",
+                batch.label,
+                batch.segment,
+                gpu_seconds * 1000.0,
+                dispatch_wall_seconds * 1000.0
+            );
+        }
         let stage = batch.dispatches[0].stage;
         assert!(batch
             .dispatches
