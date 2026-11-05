@@ -25,9 +25,9 @@ use std::{
 
 use metal::objc::{sel, sel_impl};
 use metal::{
-    Buffer as MetalBuffer, CommandBuffer, CommandQueue, ComputeCommandEncoderRef,
-    ComputePipelineDescriptor, Device, MTLArgumentBuffersTier, MTLCommandBufferStatus,
-    MTLResourceOptions, MTLSize,
+    Buffer as MetalBuffer, CommandBuffer, CommandQueue, ComputeCommandEncoder,
+    ComputeCommandEncoderRef, ComputePipelineDescriptor, Device, MTLArgumentBuffersTier,
+    MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
 };
 use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use rayon::prelude::*;
@@ -250,6 +250,7 @@ struct BatchedDispatch {
 struct MetalBatch {
     label: &'static str,
     command_buffer: CommandBuffer,
+    encoder: Option<ComputeCommandEncoder>,
     started: Instant,
     dispatches: Vec<BatchedDispatch>,
     retained_buffers: Vec<Arc<TrackedBuffer>>,
@@ -621,6 +622,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             *self.batch.borrow_mut() = Some(MetalBatch {
                 label,
                 command_buffer,
+                encoder: None,
                 started: Instant::now(),
                 dispatches: Vec::new(),
                 retained_buffers: Vec::new(),
@@ -632,10 +634,11 @@ impl<MH: MetalHash> MetalHal<MH> {
     }
 
     fn finish_batch(&self) {
-        let batch = self.batch.borrow_mut().take().unwrap();
+        let mut batch = self.batch.borrow_mut().take().unwrap();
         if batch.dispatches.is_empty() {
             return;
         }
+        batch.encoder.take().unwrap().end_encoding();
         batch.command_buffer.commit();
         batch.command_buffer.wait_until_completed();
         let status = batch.command_buffer.status();
@@ -732,8 +735,19 @@ impl<MH: MetalHash> MetalHal<MH> {
         if self.batch.borrow().is_some() {
             let mut active = self.batch.borrow_mut();
             let batch = active.as_mut().unwrap();
+            let MetalBatch {
+                command_buffer,
+                encoder,
+                retained_buffers,
+                dispatches,
+                ..
+            } = batch;
             let kernel_name = kernel.compute_function().unwrap().name();
-            let cmd_encoder = batch.command_buffer.new_compute_command_encoder();
+            // The default compute pass executes its dispatches serially. Keep
+            // one encoder for the stage so the same ordered dispatches do not
+            // pay for an encoder transition at every NTT step or Merkle level.
+            let cmd_encoder = encoder
+                .get_or_insert_with(|| command_buffer.new_compute_command_encoder().to_owned());
             callback(cmd_encoder);
             let pipeline_started = Instant::now();
             let pipeline_state = self
@@ -749,7 +763,7 @@ impl<MH: MetalHash> MetalHal<MH> {
                         offset,
                         keep_alive,
                     } => {
-                        batch.retained_buffers.push((*keep_alive).clone());
+                        retained_buffers.push((*keep_alive).clone());
                         cmd_encoder.set_buffer(index as u64, Some(buffer), *offset);
                     }
                     KernelArg::Integer(value) => cmd_encoder.set_bytes(
@@ -767,13 +781,12 @@ impl<MH: MetalHash> MetalHal<MH> {
                     MTLSize::new(pipeline_state.max_total_threads_per_threadgroup(), 1, 1),
                 ),
             }
-            cmd_encoder.end_encoding();
             let stage = if PROFILE_SEGMENT.with(Cell::get).is_some() {
                 "segment"
             } else {
                 "recursion"
             };
-            batch.dispatches.push(BatchedDispatch {
+            dispatches.push(BatchedDispatch {
                 name: kernel_name.to_owned(),
                 stage,
                 pipeline_seconds,
@@ -902,6 +915,9 @@ impl<MH: MetalHash> MetalHal<MH> {
 
 #[allow(unused_variables)]
 impl<MH: MetalHash> Hal for MetalHal<MH> {
+    fn with_gpu_stage<R>(&self, label: &'static str, f: impl FnOnce() -> R) -> R {
+        self.with_batch(label, f)
+    }
     type Elem = BabyBearElem;
     type ExtElem = BabyBearExtElem;
     type Field = BabyBear;
@@ -1428,10 +1444,16 @@ mod tests {
             gpu.hash_tree(&gpu_storage.slice(3, rows * 2), &gpu_matrix, rows, layers);
             cpu.hash_tree(&cpu_storage.slice(3, rows * 2), &cpu_matrix, rows, layers);
             assert_eq!(gpu.completed_command_buffers() - buffers_before, 1);
-            assert_eq!(gpu.completed_dispatches() - dispatches_before, 1 + layers as u64);
+            assert_eq!(
+                gpu.completed_dispatches() - dispatches_before,
+                1 + layers as u64
+            );
             assert_eq!(gpu_storage.to_vec(), cpu_storage.to_vec());
             let full = gpu_storage.to_vec();
-            assert!(full[..3].iter().chain(&full[rows * 2 + 3..]).all(|x| *x == sentinel));
+            assert!(full[..3]
+                .iter()
+                .chain(&full[rows * 2 + 3..])
+                .all(|x| *x == sentinel));
         }
     }
 

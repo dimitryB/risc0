@@ -417,19 +417,21 @@ impl<H: Hal> DeferredFinalize<H> {
             let which_buf = hal.copy_from_u32("which", &all_which_flat);
             let xs_buf = hal.copy_from_extelem("xs", &all_xs_flat);
 
-            let mut offset = 0;
-            for (id, pg) in self.groups.iter().enumerate() {
-                let pg = pg.as_ref().unwrap();
-                let group_size = self.taps.group_taps(id).count();
-                hal.batch_evaluate_any(
-                    pg.coeffs.as_ref().expect("coeffs must be restored"),
-                    pg.count,
-                    &which_buf.slice(offset, group_size),
-                    &xs_buf.slice(offset, group_size),
-                    &combined_out.slice(offset, group_size),
-                );
-                offset += group_size;
-            }
+            hal.with_gpu_stage("eval_u", || {
+                let mut offset = 0;
+                for (id, pg) in self.groups.iter().enumerate() {
+                    let pg = pg.as_ref().unwrap();
+                    let group_size = self.taps.group_taps(id).count();
+                    hal.batch_evaluate_any(
+                        pg.coeffs.as_ref().expect("coeffs must be restored"),
+                        pg.count,
+                        &which_buf.slice(offset, group_size),
+                        &xs_buf.slice(offset, group_size),
+                        &combined_out.slice(offset, group_size),
+                    );
+                    offset += group_size;
+                }
+            });
 
             // Single D2H transfer instead of one per group.
             combined_out.view(|view| {
@@ -567,32 +569,34 @@ impl<H: Hal> DeferredFinalize<H> {
             }
             let mix_which_buf = hal.copy_from_u32("which", &all_mix_which);
 
-            let mut which_offset = 0;
-            for (id, pg) in self.groups.iter().enumerate() {
-                let pg = pg.as_ref().unwrap();
-                let group_size = self.taps.group_size(id);
+            hal.with_gpu_stage("mix_poly", || {
+                let mut which_offset = 0;
+                for (id, pg) in self.groups.iter().enumerate() {
+                    let pg = pg.as_ref().unwrap();
+                    let group_size = self.taps.group_size(id);
+                    hal.mix_poly_coeffs(
+                        &combos,
+                        &cur_mix,
+                        &mix,
+                        pg.coeffs.as_ref().expect("coeffs must be restored"),
+                        &mix_which_buf.slice(which_offset, group_size),
+                        group_size,
+                        self.cycles,
+                    );
+                    cur_mix *= mix.pow(group_size);
+                    which_offset += group_size;
+                }
+
                 hal.mix_poly_coeffs(
                     &combos,
                     &cur_mix,
                     &mix,
-                    pg.coeffs.as_ref().expect("coeffs must be restored"),
-                    &mix_which_buf.slice(which_offset, group_size),
-                    group_size,
+                    check_group.coeffs.as_ref().expect("coeffs must be restored"),
+                    &mix_which_buf.slice(check_which_offset, H::CHECK_SIZE),
+                    H::CHECK_SIZE,
                     self.cycles,
                 );
-                cur_mix *= mix.pow(group_size);
-                which_offset += group_size;
-            }
-
-            hal.mix_poly_coeffs(
-                &combos,
-                &cur_mix,
-                &mix,
-                check_group.coeffs.as_ref().expect("coeffs must be restored"),
-                &mix_which_buf.slice(check_which_offset, H::CHECK_SIZE),
-                H::CHECK_SIZE,
-                self.cycles,
-            );
+            });
         });
 
         scope!("load_combos", {

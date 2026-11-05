@@ -76,6 +76,14 @@ pub struct GatherJob<'a, H: Hal> {
 }
 
 pub trait Hal {
+    /// Delimit dispatches that do not require an intervening CPU read.
+    /// Backends without command batching execute the closure directly.
+    fn with_gpu_stage<R>(&self, _label: &'static str, f: impl FnOnce() -> R) -> R
+    where
+        Self: Sized,
+    {
+        f()
+    }
     type Field: Field<Elem = Self::Elem, ExtElem = Self::ExtElem>;
     type Elem: Elem + RootsOfUnity;
     type ExtElem: ExtElem<SubElem = Self::Elem>;
