@@ -153,9 +153,56 @@ kernel void multi_ntt_rev_step(device Fp* io,
   }
 }
 
-// Keep the low twelve radix-2 stages (radix-4/8 groups within them) in a
-// 16 KiB threadgroup tile. Every stage is separated by a group barrier; only
-// the first load and final store touch device memory.
+// Two adjacent DIT stages form a radix-4 butterfly in registers. One thread
+// owns each quadruple, so only one threadgroup barrier is needed per pair.
+inline void ntt_fwd_radix4(threadgroup Fp* tile,
+                           const device Fp* twiddles,
+                           uint32_t bits,
+                           uint32_t lane) {
+  uint32_t quarter = 1u << (bits - 1);
+  const device Fp* first = twiddles + quarter - 1;
+  const device Fp* second = twiddles + 2 * quarter - 1;
+  for (uint32_t j = lane; j < 1024; j += 256) {
+    uint32_t s = j & (quarter - 1);
+    uint32_t idx = (j / quarter) * 4 * quarter + s;
+    Fp a0 = tile[idx], a1 = tile[idx + quarter];
+    Fp a2 = tile[idx + 2 * quarter], a3 = tile[idx + 3 * quarter];
+    Fp w0 = first[s], w1 = second[s], w2 = second[s + quarter];
+    Fp t0 = a1 * w0, t1 = a3 * w0;
+    Fp u0 = a0 + t0, v0 = a0 - t0;
+    Fp u1 = a2 + t1, v1 = a2 - t1;
+    Fp p0 = u1 * w1, p1 = v1 * w2;
+    tile[idx] = u0 + p0;
+    tile[idx + quarter] = v0 + p1;
+    tile[idx + 2 * quarter] = u0 - p0;
+    tile[idx + 3 * quarter] = v0 - p1;
+  }
+}
+
+inline void ntt_rev_radix4(threadgroup Fp* tile,
+                           const device Fp* twiddles,
+                           uint32_t bits,
+                           uint32_t lane) {
+  uint32_t quarter = 1u << (bits - 2);
+  const device Fp* first = twiddles + 2 * quarter - 1;
+  const device Fp* second = twiddles + quarter - 1;
+  for (uint32_t j = lane; j < 1024; j += 256) {
+    uint32_t s = j & (quarter - 1);
+    uint32_t idx = (j / quarter) * 4 * quarter + s;
+    Fp a0 = tile[idx], a1 = tile[idx + quarter];
+    Fp a2 = tile[idx + 2 * quarter], a3 = tile[idx + 3 * quarter];
+    Fp w0 = first[s], w1 = first[s + quarter], w2 = second[s];
+    Fp u0 = a0 + a2, u1 = a1 + a3;
+    Fp v0 = (a0 - a2) * w0, v1 = (a1 - a3) * w1;
+    tile[idx] = u0 + u1;
+    tile[idx + quarter] = (u0 - u1) * w2;
+    tile[idx + 2 * quarter] = v0 + v1;
+    tile[idx + 3 * quarter] = (v0 - v1) * w2;
+  }
+}
+
+// Keep the low twelve stages in a 16 KiB threadgroup tile. Only the first
+// load and final store touch device memory.
 kernel void multi_ntt_fwd_tile(device Fp* io,
                                const device Fp* twiddles,
                                const device uint32_t& nBits,
@@ -167,7 +214,12 @@ kernel void multi_ntt_fwd_tile(device Fp* io,
   uint32_t base = group.y * (1u << nBits) + group.x * 4096;
   for (uint32_t i = lane; i < 4096; i += 256) tile[i] = io[base + i];
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (uint32_t bits = firstBits; bits <= 12; bits++) {
+  uint32_t bits = firstBits;
+  for (; bits + 1 <= 12; bits += 2) {
+    ntt_fwd_radix4(tile, twiddles, bits, lane);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (bits == 12) {
     uint32_t span = 1u << (bits - 1);
     const device Fp* stage = twiddles + span - 1;
     for (uint32_t i = lane; i < 4096; i += 256) {
@@ -195,18 +247,8 @@ kernel void multi_ntt_rev_tile(device Fp* io,
   uint32_t base = group.y * (1u << nBits) + group.x * 4096;
   for (uint32_t i = lane; i < 4096; i += 256) tile[i] = io[base + i];
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (int bits = 12; bits >= 1; bits--) {
-    uint32_t span = 1u << (bits - 1);
-    const device Fp* stage = twiddles + span - 1;
-    for (uint32_t i = lane; i < 4096; i += 256) {
-      if ((i & span) == 0) {
-        Fp a = tile[i];
-        Fp b = tile[i + span];
-        Fp twiddle = stage[i & (span - 1)];
-        tile[i] = a + b;
-        tile[i + span] = (a - b) * twiddle;
-      }
-    }
+  for (uint32_t bits = 12; bits >= 2; bits -= 2) {
+    ntt_rev_radix4(tile, twiddles, bits, lane);
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
   for (uint32_t i = lane; i < 4096; i += 256) io[base + i] = tile[i];
@@ -230,18 +272,8 @@ kernel void multi_ntt_rev_tile_commit(device Fp* coeffs,
     tile[i] = scratch[column_base + row_base + i];
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (int bits = 12; bits >= 1; bits--) {
-    uint32_t span = 1u << (bits - 1);
-    const device Fp* stage = twiddles + span - 1;
-    for (uint32_t i = lane; i < 4096; i += 256) {
-      if ((i & span) == 0) {
-        Fp a = tile[i];
-        Fp b = tile[i + span];
-        Fp twiddle = stage[i & (span - 1)];
-        tile[i] = a + b;
-        tile[i + span] = (a - b) * twiddle;
-      }
-    }
+  for (uint32_t bits = 12; bits >= 2; bits -= 2) {
+    ntt_rev_radix4(tile, twiddles, bits, lane);
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
   for (uint32_t i = lane; i < 4096; i += 256) {
