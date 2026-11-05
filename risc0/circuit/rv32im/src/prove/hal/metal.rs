@@ -14,7 +14,7 @@ use crate::{
         CircuitImpl,
     },
 };
-use anyhow::{ensure, Result};
+use anyhow::{anyhow, ensure, Result};
 use metal::{CompileOptions, ComputePipelineDescriptor, MTLSize};
 use rayon::prelude::*;
 use risc0_circuit_rv32im_sys::{
@@ -164,6 +164,26 @@ fn raw_trace(trace: &PreflightTrace) -> RawPreflightTrace {
         table_split_cycle: trace.table_split_cycle,
     }
 }
+
+struct ScopedAccumJob {
+    buffers: RawAccumBuffers,
+    trace: RawPreflightTrace,
+    cycles: u32,
+}
+
+// SAFETY: This pointer bundle is used only inside std::thread::scope. The
+// witness retains each shared Metal allocation and the preflight vectors
+// until the scoped thread has joined. The GPU finalize running beside it
+// owns the previous segment's separate buffers, never these writable ones.
+unsafe impl Send for ScopedAccumJob {}
+
+impl ScopedAccumJob {
+    fn run(self) -> Result<()> {
+        ffi_wrap(|| unsafe {
+            risc0_circuit_rv32im_cpu_accum(&self.buffers, &self.trace, self.cycles)
+        })
+    }
+}
 impl CircuitWitnessGenerator<MetalHalPoseidon2> for MetalCircuitHal {
     fn generate_witness(
         &self,
@@ -220,6 +240,57 @@ impl CircuitAccumulator<MetalHalPoseidon2> for MetalCircuitHal {
         })?;
         ACCUM_CALLS.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn step_accum_with_overlap<R>(
+        &self,
+        preflight: &PreflightTrace,
+        data: &MetaBuffer<MetalHalPoseidon2>,
+        accum: &MetaBuffer<MetalHalPoseidon2>,
+        global: &MetaBuffer<MetalHalPoseidon2>,
+        mix: &MetaBuffer<MetalHalPoseidon2>,
+        concurrent: bool,
+        overlap: impl FnOnce() -> R,
+    ) -> Result<R> {
+        if !concurrent {
+            self.step_accum(preflight, data, accum, global, mix)?;
+            return Ok(overlap());
+        }
+        let job = ScopedAccumJob {
+            buffers: RawAccumBuffers {
+                data: raw(data),
+                accum: raw(accum),
+                global: raw(global),
+                mix: raw(mix),
+            },
+            trace: raw_trace(preflight),
+            cycles: preflight.cycles.len().try_into().unwrap(),
+        };
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(move || {
+                let started = std::time::Instant::now();
+                let result = job.run();
+                if result.is_ok() {
+                    ACCUM_CALLS.fetch_add(1, Ordering::Relaxed);
+                }
+                (result, started.elapsed())
+            });
+            let finalize_started = std::time::Instant::now();
+            let result = overlap();
+            let finalize_elapsed = finalize_started.elapsed();
+            let join_started = std::time::Instant::now();
+            let (cpu_result, cpu_elapsed) = handle
+                .join()
+                .map_err(|_| anyhow!("Metal CPU accumulation thread panicked"))?;
+            cpu_result?;
+            eprintln!(
+                "[metal_pipeline] accum_overlap cpu_ms={:.3} previous_finalize_ms={:.3} join_wait_ms={:.3}",
+                cpu_elapsed.as_secs_f64() * 1000.0,
+                finalize_elapsed.as_secs_f64() * 1000.0,
+                join_started.elapsed().as_secs_f64() * 1000.0
+            );
+            Ok(result)
+        })
     }
 }
 

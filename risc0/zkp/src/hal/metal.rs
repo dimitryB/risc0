@@ -287,6 +287,10 @@ pub fn with_profile_segment<R>(index: u32, f: impl FnOnce() -> R) -> R {
     f()
 }
 
+pub fn current_profile_segment() -> Option<u32> {
+    PROFILE_SEGMENT.with(Cell::get)
+}
+
 fn profile_counters() -> &'static Mutex<BTreeMap<String, MetalKernelStats>> {
     static COUNTERS: OnceLock<Mutex<BTreeMap<String, MetalKernelStats>>> = OnceLock::new();
     COUNTERS.get_or_init(|| Mutex::new(BTreeMap::new()))

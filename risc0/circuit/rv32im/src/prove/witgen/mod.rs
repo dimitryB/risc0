@@ -421,6 +421,28 @@ where
         circuit_hal: &C,
         mix: &[Val],
     ) -> Result<MetaBuffer<H>> {
+        self.accum_with_hook(hal, circuit_hal, mix, false, || ())
+            .map(|(mix, ())| mix)
+    }
+
+    pub fn accum_with_overlap<C: CircuitAccumulator<H>, R>(
+        &mut self,
+        hal: &H,
+        circuit_hal: &C,
+        mix: &[Val],
+        overlap: impl FnOnce() -> R,
+    ) -> Result<(MetaBuffer<H>, R)> {
+        self.accum_with_hook(hal, circuit_hal, mix, true, overlap)
+    }
+
+    fn accum_with_hook<C: CircuitAccumulator<H>, R>(
+        &mut self,
+        hal: &H,
+        circuit_hal: &C,
+        mix: &[Val],
+        concurrent: bool,
+        overlap: impl FnOnce() -> R,
+    ) -> Result<(MetaBuffer<H>, R)> {
         let ta0 = std::time::Instant::now();
 
         // Lazily allocate the accum MetaBuffer (~1.6 GB at po2=22). Deferring this
@@ -482,7 +504,15 @@ where
         }
 
         let data_ref = self.data.as_ref().expect("witgen.data missing");
-        circuit_hal.step_accum(&self.trace, data_ref, accum_buf, &self.global, &mix)?;
+        let overlap_result = circuit_hal.step_accum_with_overlap(
+            &self.trace,
+            data_ref,
+            accum_buf,
+            &self.global,
+            &mix,
+            concurrent,
+            overlap,
+        )?;
         if *VERBOSE {
             eprintln!(
                 "    [accum] step_accum: {:.1}ms",
@@ -509,7 +539,7 @@ where
             self.data = None;
         }
 
-        Ok(mix)
+        Ok((mix, overlap_result))
     }
 }
 

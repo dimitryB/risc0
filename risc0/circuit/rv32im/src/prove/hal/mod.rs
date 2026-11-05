@@ -23,7 +23,7 @@ pub(crate) mod intel;
 pub(crate) mod metal;
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     sync::{Arc, LazyLock},
 };
 
@@ -149,6 +149,21 @@ pub(crate) trait CircuitAccumulator<H: Hal> {
         mix: &MetaBuffer<H>,
     ) -> Result<()>;
 
+    fn step_accum_with_overlap<R>(
+        &self,
+        preflight: &PreflightTrace,
+        data: &MetaBuffer<H>,
+        accum: &MetaBuffer<H>,
+        global: &MetaBuffer<H>,
+        mix: &MetaBuffer<H>,
+        concurrent: bool,
+        overlap: impl FnOnce() -> R,
+    ) -> Result<R> {
+        let _ = concurrent;
+        self.step_accum(preflight, data, accum, global, mix)?;
+        Ok(overlap())
+    }
+
     /// Whether `step_accum` already leaves the accum buffer zeroized (INVALID -> 0).
     fn step_accum_zeroizes(&self) -> bool {
         false
@@ -174,6 +189,9 @@ where
     /// The GPU owns this segment's committed buffers until its deferred
     /// eval_check finishes; the CPU may fill only the next witness set.
     pending_finalize: RefCell<Option<DeferredFinalize<H>>>,
+    pending_profile_segment: Cell<Option<u32>>,
+    next_buffer_set: Cell<u64>,
+    pending_buffer_set: Cell<Option<u64>>,
 }
 
 impl<H, C, F> SegmentProverImpl<H, C, F>
@@ -190,6 +208,9 @@ where
             cached_fs_seed_digests: RefCell::new(None),
             pending_seal: RefCell::new(None),
             pending_finalize: RefCell::new(None),
+            pending_profile_segment: Cell::new(None),
+            next_buffer_set: Cell::new(0),
+            pending_buffer_set: Cell::new(None),
         }
     }
 
@@ -201,6 +222,28 @@ where
         let hal = (self.hal_factory)();
         *cached = Some((hal.0.clone(), hal.1.clone()));
         (hal.0, hal.1)
+    }
+
+    fn complete_pending(&self, pending: DeferredFinalize<H>, hal: &H, circuit_hal: &C) -> Seal {
+        let set = self.pending_buffer_set.get();
+        #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+        {
+            if let Some(index) = self.pending_profile_segment.replace(None) {
+                let seal = risc0_zkp::hal::metal::with_profile_segment(index, || {
+                    pending.complete(hal, circuit_hal)
+                });
+                self.pending_buffer_set.set(None);
+                eprintln!(
+                    "[metal_pipeline] gpu_complete set={:?} segment={index}",
+                    set
+                );
+                return seal;
+            }
+        }
+        let _ = set;
+        let seal = pending.complete(hal, circuit_hal);
+        self.pending_buffer_set.set(None);
+        seal
     }
 }
 
@@ -403,6 +446,15 @@ where
         scope!("prove_begin");
         let t0 = std::time::Instant::now();
 
+        let buffer_set = self.next_buffer_set.get() + 1;
+        self.next_buffer_set.set(buffer_set);
+        if metal_pipeline_enabled() {
+            eprintln!(
+                "[metal_pipeline] cpu_begin set={buffer_set} gpu_owned_set={:?}",
+                self.pending_buffer_set.get()
+            );
+        }
+
         let mode = if std::env::var_os("RISC0_WITGEN_SEQ").is_some() {
             StepMode::SeqForward
         } else {
@@ -417,18 +469,18 @@ where
             WitnessGenerator::new(hal.as_ref(), circuit_hal.as_ref(), preflight_results, mode)?;
         let header = witgen.header(po2, &expected_header);
         let t_witgen = t0.elapsed();
+        if metal_pipeline_enabled() {
+            eprintln!(
+                "[metal_pipeline] cpu_witness_ready set={buffer_set} gpu_owned_set={:?} elapsed_ms={:.3}",
+                self.pending_buffer_set.get(),
+                t_witgen.as_secs_f64() * 1000.0
+            );
+        }
 
-        // Metal eval_check from the previous segment has been executing while
-        // this distinct witness set was filled on the CPU. Complete its GPU
-        // ownership before finalizing that proof or reusing its buffers.
-        let prev_metal_seal = if metal_pipeline_enabled() {
-            self.pending_finalize
-                .borrow_mut()
-                .take()
-                .map(|pending| pending.complete(hal.as_ref(), circuit_hal.as_ref()))
-        } else {
-            None
-        };
+        // The previous segment's GPU-owned buffers remain distinct from this
+        // witness set. Finalize that proof while this segment accumulates on
+        // the CPU, after its DATA commitment has supplied the Fiat-Shamir mix.
+        let prev_metal_finalize = self.pending_finalize.borrow_mut().take();
 
         let code = &witgen.code.buf;
         let data = &witgen.data.as_ref().expect("witgen.data present").buf;
@@ -486,7 +538,18 @@ where
 
         let ta = std::time::Instant::now();
         let mix: [Val; REGCOUNT_MIX] = std::array::from_fn(|_| prover.iop().random_elem());
-        let mix = witgen.accum(hal.as_ref(), circuit_hal.as_ref(), &mix)?;
+        let (mix, prev_metal_seal) = if let Some(pending) = prev_metal_finalize {
+            let (mix, seal) =
+                witgen.accum_with_overlap(hal.as_ref(), circuit_hal.as_ref(), &mix, || {
+                    self.complete_pending(pending, hal.as_ref(), circuit_hal.as_ref())
+                })?;
+            (mix, Some(seal))
+        } else {
+            (
+                witgen.accum(hal.as_ref(), circuit_hal.as_ref(), &mix)?,
+                None,
+            )
+        };
         let t_accum = ta.elapsed();
 
         let tac = std::time::Instant::now();
@@ -535,6 +598,14 @@ where
         if metal_pipeline_enabled() {
             assert!(self.pending_finalize.borrow().is_none());
             *self.pending_finalize.borrow_mut() = Some(deferred);
+            self.pending_buffer_set.set(Some(buffer_set));
+            eprintln!(
+                "[metal_pipeline] gpu_submit set={buffer_set} cpu_next_set={}",
+                buffer_set + 1
+            );
+            #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+            self.pending_profile_segment
+                .set(risc0_zkp::hal::metal::current_profile_segment());
         } else {
             let seal = deferred.complete(hal.as_ref(), circuit_hal.as_ref());
             *self.pending_seal.borrow_mut() = Some(seal);
@@ -556,24 +627,28 @@ where
     }
 
     fn reset_pipeline(&self) {
-        if self.pending_finalize.borrow().is_some() {
+        if metal_pipeline_enabled() {
             let (_, circuit_hal) = self.get_hal();
             circuit_hal.eval_check_dep();
-            self.pending_finalize.borrow_mut().take();
         }
+        self.pending_finalize.borrow_mut().take();
+        self.pending_profile_segment.set(None);
+        self.pending_buffer_set.set(None);
         self.pending_seal.borrow_mut().take();
     }
 
     fn prove_end(&self) -> Result<Seal> {
         scope!("prove_end");
         if metal_pipeline_enabled() {
-            let pending = self
-                .pending_finalize
-                .borrow_mut()
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("prove_end: no pending finalize"))?;
             let (hal, circuit_hal) = self.get_hal();
-            return Ok(pending.complete(hal.as_ref(), circuit_hal.as_ref()));
+            let pending = self.pending_finalize.borrow_mut().take();
+            let Some(pending) = pending else {
+                circuit_hal.eval_check_dep();
+                self.pending_profile_segment.set(None);
+                self.pending_buffer_set.set(None);
+                anyhow::bail!("prove_end: no pending finalize");
+            };
+            return Ok(self.complete_pending(pending, hal.as_ref(), circuit_hal.as_ref()));
         }
         self.pending_seal
             .borrow_mut()
