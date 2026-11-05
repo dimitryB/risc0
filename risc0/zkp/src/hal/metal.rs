@@ -1466,20 +1466,26 @@ fn compute_launch_params(n_bits: u32, s_bits: u32, c_size: u32) -> (MTLSize, MTL
     // Next thread over G
     block.height = threads.min(g_size);
     // Don't bother threading over C
-    if std::env::var("RISC0_METAL_NTT_LEGACY_GRID").as_deref() == Ok("1") {
-        let mut grids = 32;
-        grid.width = grids.min(s_size / block.width);
-        grids /= grid.width;
-        grid.height = grids.min(g_size / block.height);
-        grids /= grid.height;
-        grid.depth = grids.min(c_size as u64);
-    } else {
-        // Cover every butterfly and every column. The kernels' grid-stride
-        // loops then execute once per thread instead of serializing millions
-        // of butterflies through the old 32-threadgroup grid.
+    if std::env::var("RISC0_METAL_NTT_FULL_GRID").as_deref() == Ok("1") {
+        // Diagnostic upper bound on launch width: one butterfly per thread.
         grid.width = s_size.div_ceil(block.width);
         grid.height = g_size.div_ceil(block.height);
         grid.depth = c_size as u64;
+    } else {
+        // Keep the proven 32-group budget within each column while exposing
+        // all columns to Metal in one launch. The old grid serialized columns
+        // through the kernel's inner loop; the full grid created too many
+        // small threadgroups at po2 20.
+        let mut grids = 32;
+        grid.width = grids.min(s_size.div_ceil(block.width));
+        grids /= grid.width;
+        grid.height = grids.min(g_size.div_ceil(block.height));
+        grids /= grid.height;
+        grid.depth = if std::env::var("RISC0_METAL_NTT_LEGACY_GRID").as_deref() == Ok("1") {
+            grids.min(c_size as u64)
+        } else {
+            c_size as u64
+        };
     }
     (grid, block)
 }
