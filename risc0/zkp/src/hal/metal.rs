@@ -1466,15 +1466,21 @@ fn compute_launch_params(n_bits: u32, s_bits: u32, c_size: u32) -> (MTLSize, MTL
     // Next thread over G
     block.height = threads.min(g_size);
     // Don't bother threading over C
-    let mut grids = 32;
-    // First grid over S
-    grid.width = grids.min(s_size / block.width);
-    grids /= grid.width;
-    // Next grid over G
-    grid.height = grids.min(g_size / block.height);
-    grids /= grid.height;
-    // Next grid over C
-    grid.depth = grids.min(c_size as u64);
+    if std::env::var("RISC0_METAL_NTT_LEGACY_GRID").as_deref() == Ok("1") {
+        let mut grids = 32;
+        grid.width = grids.min(s_size / block.width);
+        grids /= grid.width;
+        grid.height = grids.min(g_size / block.height);
+        grids /= grid.height;
+        grid.depth = grids.min(c_size as u64);
+    } else {
+        // Cover every butterfly and every column. The kernels' grid-stride
+        // loops then execute once per thread instead of serializing millions
+        // of butterflies through the old 32-threadgroup grid.
+        grid.width = s_size.div_ceil(block.width);
+        grid.height = g_size.div_ceil(block.height);
+        grid.depth = c_size as u64;
+    }
     (grid, block)
 }
 
