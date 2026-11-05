@@ -26,8 +26,8 @@ use std::{
 use metal::objc::{sel, sel_impl};
 use metal::{
     Buffer as MetalBuffer, CommandBuffer, CommandQueue, ComputeCommandEncoder,
-    ComputeCommandEncoderRef, ComputePipelineDescriptor, Device, MTLArgumentBuffersTier,
-    MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
+    ComputeCommandEncoderRef, ComputePipelineDescriptor, ComputePipelineState, Device,
+    MTLArgumentBuffersTier, MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
 };
 use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use rayon::prelude::*;
@@ -246,11 +246,21 @@ struct BatchedDispatch {
     static_threadgroup_memory_length: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoundArg {
+    Null,
+    Buffer { identity: usize, offset: u64 },
+    Integer(u32),
+}
+
 #[derive(Debug)]
 struct MetalBatch {
     label: &'static str,
     command_buffer: CommandBuffer,
     encoder: Option<ComputeCommandEncoder>,
+    current_kernel: Option<String>,
+    pipeline_state: Option<ComputePipelineState>,
+    bound_args: Vec<Option<BoundArg>>,
     started: Instant,
     dispatches: Vec<BatchedDispatch>,
     retained_buffers: Vec<Arc<TrackedBuffer>>,
@@ -623,6 +633,9 @@ impl<MH: MetalHash> MetalHal<MH> {
                 label,
                 command_buffer,
                 encoder: None,
+                current_kernel: None,
+                pipeline_state: None,
+                bound_args: Vec::new(),
                 started: Instant::now(),
                 dispatches: Vec::new(),
                 retained_buffers: Vec::new(),
@@ -738,6 +751,9 @@ impl<MH: MetalHash> MetalHal<MH> {
             let MetalBatch {
                 command_buffer,
                 encoder,
+                current_kernel,
+                pipeline_state,
+                bound_args,
                 retained_buffers,
                 dispatches,
                 ..
@@ -749,29 +765,54 @@ impl<MH: MetalHash> MetalHal<MH> {
             let cmd_encoder = encoder
                 .get_or_insert_with(|| command_buffer.new_compute_command_encoder().to_owned());
             callback(cmd_encoder);
-            let pipeline_started = Instant::now();
-            let pipeline_state = self
-                .device
-                .new_compute_pipeline_state_with_function(kernel.compute_function().unwrap())
-                .unwrap();
-            let pipeline_seconds = pipeline_started.elapsed().as_secs_f64();
-            cmd_encoder.set_compute_pipeline_state(&pipeline_state);
+            let pipeline_seconds = if current_kernel.as_deref() != Some(kernel_name) {
+                let pipeline_started = Instant::now();
+                *pipeline_state = Some(
+                    self.device
+                        .new_compute_pipeline_state_with_function(
+                            kernel.compute_function().unwrap(),
+                        )
+                        .unwrap(),
+                );
+                let seconds = pipeline_started.elapsed().as_secs_f64();
+                cmd_encoder.set_compute_pipeline_state(pipeline_state.as_ref().unwrap());
+                *current_kernel = Some(kernel_name.to_owned());
+                bound_args.clear();
+                seconds
+            } else {
+                0.0
+            };
+            let pipeline_state = pipeline_state.as_ref().unwrap();
             for (index, arg) in args.iter().enumerate() {
-                match arg {
+                let binding = match arg {
                     KernelArg::Buffer {
-                        buffer,
-                        offset,
-                        keep_alive,
+                        keep_alive, offset, ..
                     } => {
                         retained_buffers.push((*keep_alive).clone());
-                        cmd_encoder.set_buffer(index as u64, Some(buffer), *offset);
+                        BoundArg::Buffer {
+                            identity: Arc::as_ptr(keep_alive) as usize,
+                            offset: *offset,
+                        }
                     }
-                    KernelArg::Integer(value) => cmd_encoder.set_bytes(
-                        index as u64,
-                        mem::size_of_val(value) as u64,
-                        value.to_le_bytes().as_ptr() as *const c_void,
-                    ),
-                    KernelArg::Null => cmd_encoder.set_buffer(index as u64, None, 0),
+                    KernelArg::Integer(value) => BoundArg::Integer(*value),
+                    KernelArg::Null => BoundArg::Null,
+                };
+                if bound_args.len() <= index {
+                    bound_args.resize(index + 1, None);
+                }
+                if bound_args[index] != Some(binding) {
+                    match arg {
+                        KernelArg::Buffer { buffer, offset, .. } => {
+                            cmd_encoder.set_buffer(index as u64, Some(buffer), *offset);
+                        }
+                        KernelArg::Integer(value) => cmd_encoder.set_bytes(
+                            index as u64,
+                            mem::size_of_val(value) as u64,
+                            value.to_le_bytes().as_ptr() as *const c_void,
+                        ),
+                        KernelArg::Null => cmd_encoder.set_buffer(index as u64, None, 0),
+                    }
+                    bound_args[index] = Some(binding);
                 }
             }
             match opts {
