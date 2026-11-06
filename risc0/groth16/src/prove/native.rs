@@ -168,6 +168,7 @@ pub fn prestart() -> Result<Prestarted> {
     let child = Command::new(config.root.join("prover"))
         .arg(format!("--native-parent={}", std::process::id()))
         .arg(format!("--native-timeout={}s", config.timeout.as_secs()))
+        .arg("--native-no-gc-setup")
         .arg(config.root.join("stark_verify.cs"))
         .arg(config.root.join("stark_verify_final.pk.dmp"))
         .arg("-")

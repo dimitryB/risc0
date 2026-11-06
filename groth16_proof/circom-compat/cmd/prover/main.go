@@ -18,12 +18,14 @@ import (
 	"io"
 	"os"
 	"path"
+	"runtime/debug"
 	"time"
 )
 
 // Native callers opt in; existing container invocations retain their behavior.
 var nativeParent = flag.Int("native-parent", 0, "exit if this parent PID disappears")
 var nativeTimeout = flag.Duration("native-timeout", 0, "maximum native helper lifetime")
+var nativeNoGCSetup = flag.Bool("native-no-gc-setup", false, "defer Go GC until the witness is loaded")
 
 func main() {
 	flag.Parse()
@@ -63,6 +65,10 @@ func help() {
 }
 
 func run() error {
+	var oldGCPercent int
+	if *nativeNoGCSetup {
+		oldGCPercent = debug.SetGCPercent(-1)
+	}
 	r1cs, err := loadCS(flag.Arg(0))
 	if err != nil {
 		return fmt.Errorf("failed to load constraint system: %w", err)
@@ -72,10 +78,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to load proving key: %w", err)
 	}
-
 	fullWitness, err := loadWitness(flag.Arg(2), r1cs)
 	if err != nil {
 		return fmt.Errorf("failed to load witness: %w", err)
+	}
+	if *nativeNoGCSetup {
+		debug.SetGCPercent(oldGCPercent)
 	}
 
 	proof, err := groth16.Prove(r1cs, pk, fullWitness)
