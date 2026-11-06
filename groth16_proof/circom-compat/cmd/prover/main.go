@@ -15,6 +15,7 @@ import (
 	"github.com/consensys/gnark/constraint"
 	bn254r1cs "github.com/consensys/gnark/constraint/bn254"
 	"github.com/consensys/gnark/logger"
+	"io"
 	"os"
 	"path"
 	"time"
@@ -183,9 +184,15 @@ func loadWitness(name string, cs constraint.ConstraintSystem) (witness.Witness, 
 	log := logger.Logger()
 	start := time.Now()
 
-	file, err := utils.OpenBufferedFile(name)
-	if err != nil {
-		return nil, err
+	var file io.ReadCloser
+	var err error
+	if name == "-" {
+		file = io.NopCloser(os.Stdin)
+	} else {
+		file, err = utils.OpenBufferedFile(name)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
@@ -194,7 +201,11 @@ func loadWitness(name string, cs constraint.ConstraintSystem) (witness.Witness, 
 	}()
 
 	var w witness.Witness
-	switch path.Ext(name) {
+	ext := path.Ext(name)
+	if name == "-" {
+		ext = ".wtns"
+	}
+	switch ext {
 	case ".wtns":
 		w, err = circom.ReadWTNS(file, cs)
 		if err != nil {

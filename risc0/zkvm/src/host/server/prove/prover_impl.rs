@@ -1408,17 +1408,19 @@ impl ProverImpl {
 
         let groth16_receipt = if let Some(ident_receipt) = pre_ident {
             // identity_p254 already computed by recursion worker (overlapped with STARK).
-            use risc0_groth16::prove::shrink_wrap_with;
-            if let Err(e) = risc0_groth16::prove::prestart_prover() {
+            use risc0_groth16::prove::{shrink_wrap_with_startup, PrestartedProver};
+            let startup = risc0_groth16::prove::prestart_prover().unwrap_or_else(|e| {
                 eprintln!("[groth16] prover prestart failed (non-fatal): {e}");
-            }
+                PrestartedProver::default()
+            });
             let t0 = std::time::Instant::now();
             let seal_bytes = ident_receipt.get_seal_bytes();
             // See `release_hal_buffers`: the wrap cannot reclaim what the STARK HAL is caching.
             // Released while the wrap computes its witness on another thread.
             #[cfg(any(feature = "rocm", feature = "intel"))]
             release_cached_provers();
-            let seal = shrink_wrap_with(&seal_bytes, super::release_hal_buffers)?.to_vec();
+            let seal = shrink_wrap_with_startup(&seal_bytes, startup, super::release_hal_buffers)?
+                .to_vec();
             super::release_hal_buffers();
             let wrap_ms = t0.elapsed().as_secs_f64() * 1000.0;
             eprintln!(

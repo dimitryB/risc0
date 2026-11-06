@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{BufWriter, Read},
+    io::{BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::OnceLock,
@@ -148,59 +148,97 @@ impl Drop for OwnedChild {
     }
 }
 
-/// Produce a complete Groth16 seal without Docker or remote proving.
-pub fn shrink_wrap(seal: &[u8]) -> Result<Seal> {
+/// Owns the helper across identity_p254. Dropping it on any early exit reaps the child.
+pub struct Prestarted {
+    child: OwnedChild,
+    work: tempfile::TempDir,
+    started: Instant,
+}
+
+/// Start key loading while identity_p254 runs. The helper waits on stdin for the witness.
+pub fn prestart() -> Result<Prestarted> {
     preflight()?;
     let config = config()?;
-    let start = Instant::now();
     let work = match std::env::var_os("RISC0_WORK_DIR") {
         Some(root) => tempfile::tempdir_in(root)?,
         None => tempfile::tempdir()?,
     };
-    let witness = work.path().join("witness.wtns");
-    write_witness(seal, &witness)?;
-    ensure!(
-        start.elapsed() < config.timeout,
-        "native witness generation exceeded deadline"
-    );
     let output = work.path().join("proof.json");
-    let remaining = (config.timeout - start.elapsed()).as_secs().max(1);
+    let started = Instant::now();
     let child = Command::new(config.root.join("prover"))
         .arg(format!("--native-parent={}", std::process::id()))
-        .arg(format!("--native-timeout={remaining}s"))
+        .arg(format!("--native-timeout={}s", config.timeout.as_secs()))
         .arg(config.root.join("stark_verify.cs"))
         .arg(config.root.join("stark_verify_final.pk.dmp"))
-        .arg(&witness)
+        .arg("-")
         .arg(&output)
         .env_clear()
         .env("GOMAXPROCS", config.threads.to_string())
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .context("start native Groth16 prover")?;
-    let mut child = OwnedChild(child);
+    Ok(Prestarted {
+        child: OwnedChild(child),
+        work,
+        started,
+    })
+}
+
+/// Produce a complete Groth16 seal without Docker or remote proving.
+pub fn shrink_wrap(seal: &[u8]) -> Result<Seal> {
+    shrink_wrap_started(seal, None)
+}
+
+/// Stream the witness to an already loading helper, or start one for direct callers.
+pub fn shrink_wrap_started(seal: &[u8], prestarted: Option<Prestarted>) -> Result<Seal> {
+    let mut prover = match prestarted {
+        Some(prover) => prover,
+        None => prestart()?,
+    };
+    let config = config()?;
+    ensure!(
+        prover.started.elapsed() < config.timeout,
+        "native Groth16 prover exceeded deadline"
+    );
+    let witness_start = Instant::now();
+    let stdin = prover
+        .child
+        .0
+        .stdin
+        .take()
+        .context("native prover stdin unavailable")?;
+    let mut writer = BufWriter::new(stdin);
+    super::witness::write(seal, &mut writer).context("stream native witness")?;
+    writer.flush().context("flush native witness")?;
+    drop(writer);
+    let witness_ms = witness_start.elapsed().as_secs_f64() * 1000.0;
     let status = loop {
-        if let Some(status) = child.0.try_wait()? {
+        if let Some(status) = prover.child.0.try_wait()? {
             break status;
         }
-        if start.elapsed() >= config.timeout {
+        if prover.started.elapsed() >= config.timeout {
             bail!("native Groth16 prover exceeded deadline");
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     ensure!(status.success(), "native Groth16 prover failed: {status}");
+    let output = prover.work.path().join("proof.json");
     ensure!(
         std::fs::metadata(&output)?.len() <= 16384,
         "native proof JSON exceeds size limit"
     );
     let proof: ProofJson = serde_json::from_slice(&std::fs::read(output)?)?;
     tracing::info!(
-        witness_and_wrap_ms = start.elapsed().as_secs_f64() * 1000.0,
+        witness_ms,
+        prestart_and_wrap_ms = prover.started.elapsed().as_secs_f64() * 1000.0,
         "native Groth16 wrap complete"
     );
     proof.try_into()
 }
 
 /// Effective global Rayon pool size, frozen by native worker startup.
-pub fn rayon_threads() -> usize { rayon::current_num_threads() }
+pub fn rayon_threads() -> usize {
+    rayon::current_num_threads()
+}

@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use risc0_core::field::baby_bear::{BabyBear, Elem, ExtElem};
-use risc0_groth16::prove::shrink_wrap_with;
+use risc0_groth16::prove::{shrink_wrap_with_startup, PrestartedProver};
 use risc0_zkp::hal::{CircuitHal, Hal};
 
 use self::{dev_mode::DevModeProver, prover_impl::ProverImpl};
@@ -216,9 +216,10 @@ pub trait ProverServer: private::Sealed {
     ) -> Result<Groth16Receipt<ReceiptClaim>> {
         let t0 = std::time::Instant::now();
         // Let the Groth16 prover load its proving key while identity_p254 runs.
-        if let Err(e) = risc0_groth16::prove::prestart_prover() {
+        let startup = risc0_groth16::prove::prestart_prover().unwrap_or_else(|e| {
             tracing::warn!("groth16 prover prestart failed (non-fatal): {e}");
-        }
+            PrestartedProver::default()
+        });
         let ident_receipt = self.identity_p254(receipt).unwrap();
         let ident_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -231,7 +232,7 @@ pub trait ProverServer: private::Sealed {
         #[cfg(any(feature = "rocm", feature = "intel"))]
         prover_impl::release_cached_provers();
         let t2 = std::time::Instant::now();
-        let seal = shrink_wrap_with(&seal_bytes, release_hal_buffers)?.to_vec();
+        let seal = shrink_wrap_with_startup(&seal_bytes, startup, release_hal_buffers)?.to_vec();
         release_hal_buffers();
         let wrap_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
