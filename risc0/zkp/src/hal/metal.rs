@@ -40,6 +40,10 @@ use risc0_core::{
 };
 
 use super::{tracker, Buffer, Hal};
+
+#[path = "metal_cache.rs"]
+mod metal_cache;
+pub use metal_cache::PipelineArchive;
 use crate::{
     core::{
         digest::Digest,
@@ -219,6 +223,7 @@ pub struct MetalHal<Hash: MetalHash + ?Sized> {
     pub device: Device,
     pub cmd_queue: CommandQueue,
     kernels: HashMap<String, ComputePipelineDescriptor>,
+    pipeline_archive: PipelineArchive,
     hash: Option<Box<Hash>>,
     completed_dispatches: Cell<u64>,
     completed_command_buffers: Cell<u64>,
@@ -595,6 +600,10 @@ impl<MH: MetalHash> MetalHal<MH> {
                 .new_library_with_source(METAL_SOURCE, &options)
                 .expect("system Metal runtime compiler rejected the retained kernel source")
         };
+        #[cfg(feature = "metal-runtime")]
+        let pipeline_archive = PipelineArchive::new(&device, METAL_SOURCE.as_bytes());
+        #[cfg(not(feature = "metal-runtime"))]
+        let pipeline_archive = PipelineArchive::new(&device, METAL_LIB);
         let cmd_queue = device.new_command_queue();
         let mut kernels = HashMap::new();
         for name in KERNEL_NAMES {
@@ -607,6 +616,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             device,
             cmd_queue,
             kernels,
+            pipeline_archive,
             hash: None,
             completed_dispatches: Cell::new(0),
             completed_command_buffers: Cell::new(0),
@@ -863,13 +873,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             callback(cmd_encoder);
             let pipeline_seconds = if current_kernel.as_deref() != Some(kernel_name) {
                 let pipeline_started = Instant::now();
-                *pipeline_state = Some(
-                    self.device
-                        .new_compute_pipeline_state_with_function(
-                            kernel.compute_function().unwrap(),
-                        )
-                        .unwrap(),
-                );
+                *pipeline_state = Some(self.pipeline_archive.pipeline(&self.device, kernel).unwrap());
                 let seconds = pipeline_started.elapsed().as_secs_f64();
                 cmd_encoder.set_compute_pipeline_state(pipeline_state.as_ref().unwrap());
                 *current_kernel = Some(kernel_name.to_owned());
@@ -947,10 +951,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             callback(cmd_encoder);
 
             let pipeline_started = Instant::now();
-            let pipeline_state = self
-                .device
-                .new_compute_pipeline_state_with_function(kernel.compute_function().unwrap())
-                .unwrap();
+            let pipeline_state = self.pipeline_archive.pipeline(&self.device, kernel).unwrap();
             let pipeline_seconds = pipeline_started.elapsed().as_secs_f64();
 
             cmd_encoder.set_compute_pipeline_state(&pipeline_state);

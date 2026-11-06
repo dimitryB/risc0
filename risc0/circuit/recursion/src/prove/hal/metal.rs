@@ -44,7 +44,7 @@ use risc0_zkp::{
         map_pow, RootsOfUnity,
     },
     hal::{
-        metal::{BufferImpl, KernelArg, MetalHalPoseidon2},
+        metal::{BufferImpl, KernelArg, MetalHalPoseidon2, PipelineArchive},
         AccumPreflight, Buffer, CircuitHal, Hal,
     },
     INV_RATE,
@@ -100,6 +100,10 @@ impl MetalCircuitHal {
             .device
             .new_library_with_source(if split { SPLIT_SOURCE } else { SOURCE }, &options)
             .map_err(|error| anyhow::anyhow!("recursion Metal compilation failed: {error}"))?;
+        let archive = PipelineArchive::new(
+            &hal.device,
+            if split { SPLIT_SOURCE } else { SOURCE }.as_bytes(),
+        );
         let names: Vec<String> = if split {
             (0..6)
                 .map(|part| format!("eval_check_part{part}"))
@@ -115,6 +119,9 @@ impl MetalCircuitHal {
                 })?;
                 let kernel = ComputePipelineDescriptor::new();
                 kernel.set_compute_function(Some(&function));
+                archive.pipeline(&hal.device, &kernel).map_err(|error| {
+                    anyhow::anyhow!("recursion Metal pipeline {name} failed: {error}")
+                })?;
                 Ok(kernel)
             })
             .collect::<Result<Vec<_>>>()?;

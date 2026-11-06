@@ -27,7 +27,7 @@ use risc0_zkp::{
     adapter::CircuitInfo,
     field::{map_pow, Elem, ExtElem as _, RootsOfUnity},
     hal::{
-        metal::{BufferImpl, KernelArg, MetalHalPoseidon2},
+        metal::{BufferImpl, KernelArg, MetalHalPoseidon2, PipelineArchive},
         AccumPreflight, Buffer, CircuitHal, Hal,
     },
     INV_RATE,
@@ -108,6 +108,10 @@ impl MetalCircuitHal {
             .device
             .new_library_with_source(if evalfast { EVALFAST_SOURCE } else { SOURCE }, &options)
             .map_err(|e| anyhow::anyhow!("RV32IM Metal compilation failed: {e}"))?;
+        let archive = PipelineArchive::new(
+            &hal.device,
+            if evalfast { EVALFAST_SOURCE } else { SOURCE }.as_bytes(),
+        );
         let names: &[&str] = if evalfast {
             &["ef_prep", "ef_eval_split", "ef_combine"]
         } else {
@@ -120,9 +124,7 @@ impl MetalCircuitHal {
                 .map_err(|e| anyhow::anyhow!(e))?;
             let kernel = ComputePipelineDescriptor::new();
             kernel.set_compute_function(Some(&function));
-            hal.device
-                .new_compute_pipeline_state_with_function(&function)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            archive.pipeline(&hal.device, &kernel).map_err(|e| anyhow::anyhow!(e))?;
             kernels.push(kernel);
         }
         HALS.with(|hals| hals.borrow_mut().push(Arc::downgrade(&hal)));
