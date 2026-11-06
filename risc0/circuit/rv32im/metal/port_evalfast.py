@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Translate the in-tree evalfast post-remat_lu output to an MSL phase split.
-
-The input is regen.py's p6.cu, after remat_lu.py and before CUDA shared-memory
-placement and chain-tail splitting. This emits a candidate shader only; the
-resident worker continues to use generate.py until exact differentials pass.
-"""
+"""Translate the pinned evalfast pipeline, including hot slab and chain tails, to MSL."""
 
 import argparse
 import hashlib
@@ -21,7 +16,7 @@ def sha(path):
 
 
 def regenerate(engine):
-    """Run the pinned evalfast passes through the main/LogUp rematerialization."""
+    """Run the pinned evalfast passes through chain-tail splitting."""
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(engine / 'risc0/circuit/rv32im-sys/kernels/cuda/evalfast'))
     import regen
@@ -51,6 +46,18 @@ def regenerate(engine):
             assert all(line in log for line in expected), (tool, log[-1000:])
             source = next_source
             if tool == regen.HIP_LAST:
+                # 32 hot words x 256 threads x 4 bytes exhausts Metal's 32 KiB
+                # threadgroup budget. The other slab words stay private.
+                for next_tool, next_args in (
+                    ('mksm2.py', ['32', '32']),
+                    ('mksub.py', regen.PASSES[-1][1]),
+                ):
+                    next_source = root / f'{next_tool}.cu'
+                    log = regen.run(environment, str(Path(regen.HERE) / next_tool),
+                                    str(source), str(next_source), *next_args)
+                    if next_tool == 'mksub.py':
+                        assert all(line in log for line in regen.MKSUB), log[-2000:]
+                    source = next_source
                 break
         return source.read_text()
 
@@ -89,6 +96,60 @@ def pointer_templates(text):
     text, count = pat.subn(convert, text)
     assert seen == {f'rv32im_v2_{i}' for i in range(20)}, (count, seen)
     return text
+
+
+def shared_calls(code):
+    """Carry Metal's explicit threadgroup pointer through the generated calls."""
+    names = re.compile(r'\b(?:rv32im_v2_\d+(?:_t)?|poly_fp|rk_accblk)\(')
+    replacements = []
+    declarations = 0
+    calls = 0
+    for match in names.finditer(code):
+        depth = 1
+        end = match.end()
+        while depth:
+            assert end < len(code), match.group()
+            if code[end] == '(':
+                depth += 1
+            elif code[end] == ')':
+                depth -= 1
+            end += 1
+        line = code.rfind('\n', 0, match.start()) + 1
+        prefix = code[line:match.start()]
+        declaration = bool(re.search(r'\bFpExt\s+$', prefix))
+        if declaration:
+            assert code[end:end + 2] in (' {', ';\n') or code[end] == ';'
+            addition = ', threadgroup uint* ef_sm, uint ef_lane'
+            declarations += 1
+        else:
+            addition = ', ef_sm, ef_lane'
+            calls += 1
+        replacements.append((end - 1, addition))
+    for pos, addition in reversed(replacements):
+        code = code[:pos] + addition + code[pos:]
+    assert declarations >= 40 and calls >= 20, (declarations, calls)
+    return code
+
+
+def shared_macros(code):
+    assert '#define EF_NHOT 32' in code
+    code = code.replace('__shared__ uint32_t ef_sm[EF_NHOT][EF_THREADS];', '')
+    code = code.replace('#define EF_SMW(k) ef_sm[k][threadIdx.x]',
+                        '#define EF_SMW(k) ef_sm[(k) * EF_THREADS + ef_lane]')
+    for phase in ('M', 'L'):
+        code, load_count = re.subn(
+            rf'(?m)^#define RK_LD1{phase}\(p, w\).+$',
+            f'#define RK_LD1{phase}(p, w) (ef_hot{phase}(w) >= 0 ? '
+            f'Fp::fromRaw(EF_SMW(ef_hot{phase}(w))) : '
+            'reinterpret_cast<const thread Fp*>(p)[(size_t)(w)])', code)
+        code, store_count = re.subn(
+            rf'(?m)^#define RK_ST1{phase}\(p, w, v\).+$',
+            f'#define RK_ST1{phase}(p, w, v) do {{ Fp _rk_scalar = Fp(v); '
+            f'if (ef_hot{phase}(w) >= 0) EF_SMW(ef_hot{phase}(w)) = _rk_scalar.asRaw(); '
+            'else reinterpret_cast<thread Fp*>(p)[(size_t)(w)] = _rk_scalar; } while (0)', code)
+        assert load_count == store_count == 1
+    assert 'threadIdx' not in code and '__shared__' not in code
+    return code
 
 
 def transform(src):
@@ -151,7 +212,8 @@ def transform(src):
     code = code.replace('Fp* arg0, FpExt* arg6, Fp* arg7, Fp* arg8, Fp* arg9)',
                         'thread Fp* arg0, thread FpExt* arg6, const device Fp* arg7, const device Fp* arg8, const device Fp* arg9)')
     assert 'Fp** args' not in code and 'args[' not in code
-    return code
+    code = shared_macros(code)
+    return shared_calls(code)
 
 
 KERNELS = r'''
@@ -172,15 +234,17 @@ kernel void ef_eval_split(device Fp* check [[buffer(0)]],
                           const device FpExt* poly_mix [[buffer(5)]],
                           device Fp* scratch [[buffer(6)]],
                           constant uint& domain [[buffer(7)]],
-                          uint tid [[thread_position_in_grid]]) {
+                          uint tid [[thread_position_in_grid]],
+                          uint ef_lane [[thread_index_in_threadgroup]]) {
   if (tid >= 2u * domain) return;
   const uint phase = tid >= domain;
   const uint cycle = tid - phase * domain;
+  threadgroup uint ef_sm[EF_NHOT * EF_THREADS];
   Fp slab[RK_NWORDS];
   FpExt value;
-  if (phase == 0u) value = poly_fp(cycle, domain, poly_mix, accum, data, out, mix, slab);
+  if (phase == 0u) value = poly_fp(cycle, domain, poly_mix, accum, data, out, mix, slab, ef_sm, ef_lane);
   else value = rk_accblk(cycle, domain, poly_mix, slab,
-                         reinterpret_cast<thread FpExt*>(slab), data, accum, mix);
+                         reinterpret_cast<thread FpExt*>(slab), data, accum, mix, ef_sm, ef_lane);
   device Fp* dst = phase == 0u ? check : scratch;
   for (uint i = 0; i < 4; i++) dst[i * domain + cycle] = value.elems[i];
 }
@@ -206,9 +270,9 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     src = args.input.read_text() if args.input else regenerate(args.engine.resolve())
-    assert 'rk_accblk' in src and 'ef_eval_split' in src and 'remat_lu' in src
+    assert 'rk_accblk' in src and 'ef_eval_split' in src and 'EF_NHOT 32' in src
     text = headers(args.engine.resolve())
-    text += '#define EF_NPC 458u\n#define EF_NPM 627u\n#define EF_WIDE 1\n'
+    text += '#define EF_NPC 458u\n#define EF_NPM 627u\n#define EF_WIDE 1\n#define EF_THREADS 256u\n'
     text += '#define EF_LD(p, i) ((p)[(i)])\n'
     text += '#define EF_PM(i) (poly_mix[(i)])\n'
     text += transform(src)
@@ -222,7 +286,8 @@ def main():
               'entry_point': 'ef_prep',
               'entry_points': ['ef_prep', 'ef_eval_split', 'ef_combine'],
               'poly_mix_exponents': json.loads(args.reference_metadata.read_text())['poly_mix_exponents'],
-              'evalfast_stage': 'through remat_lu.py; before mksm2.py and mksub.py'}
+              'evalfast_stage': 'through mksm2.py (32 words per phase) and mksub.py',
+              'threadgroup_bytes': 32 * 256 * 4}
     args.output.with_suffix('.json').write_text(json.dumps(report, indent=2) + '\n')
     print(args.output)
 
