@@ -90,12 +90,23 @@ fn download_zkr() {
 // wrapper fails the build; no stale evaluator or CPU fallback is substituted.
 #[cfg(feature = "metal")]
 fn embed_metal() {
-    use std::{env, fs, path::PathBuf};
+    use std::{env, fs, path::PathBuf, process::Command};
     let root = PathBuf::from("../recursion-sys/kernels");
     let cuda = root.join("cuda/eval_check.cu");
     let wrapper = root.join("metal/eval_check.metal");
+    let split_generator = root.join("cuda/eval_check_split.py");
+    let split_port = root.join("metal/port_eval_check_split.py");
     println!("cargo:rerun-if-changed={}", cuda.display());
     println!("cargo:rerun-if-changed={}", wrapper.display());
+    for path in [
+        &split_generator,
+        &split_port,
+        &root.join("cuda/ec_lazyredc.py"),
+        &root.join("cuda/ec_lazyfp.py"),
+        &root.join("cuda/eval_check_split.cu"),
+    ] {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
     let cuda = fs::read_to_string(cuda).unwrap();
     let function = cuda
         .split_once("__device__ FpExt poly_fp(")
@@ -115,32 +126,67 @@ fn embed_metal() {
     let wrapper = fs::read_to_string(wrapper).unwrap();
     assert_eq!(wrapper.matches("/* GENERATED_POLY_FP_BODY */").count(), 1);
     let kernel = wrapper.replace("/* GENERATED_POLY_FP_BODY */", body);
-    let mut source = String::new();
-    for (name, contents) in
-        risc0_build_kernel::metal_headers()
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let base = out_dir.join("recursion-split-base.cu");
+    let result = Command::new("python3")
+        .arg(&split_generator)
+        .arg("--check")
+        .arg("--metal-base-output")
+        .arg(&base)
+        .output()
+        .expect("recursion split generator did not start");
+    assert!(
+        result.status.success(),
+        "recursion split source changed: {}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let split = out_dir.join("recursion-split-body.metal");
+    let result = Command::new("python3")
+        .arg(&split_port)
+        .arg("--input")
+        .arg(&base)
+        .arg("--output")
+        .arg(&split)
+        .output()
+        .expect("recursion Metal split port did not start");
+    assert!(
+        result.status.success(),
+        "recursion Metal split port failed: {}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let split_kernel = fs::read_to_string(split).unwrap();
+    for (filename, variable, contents) in [
+        ("recursion.metal", "RECURSION_METAL_SOURCE", kernel.as_str()),
+        (
+            "recursion-split.metal",
+            "RECURSION_METAL_SPLIT_SOURCE",
+            split_kernel.as_str(),
+        ),
+    ] {
+        let mut source = String::new();
+        for (name, contents) in risc0_build_kernel::metal_headers()
             .iter()
             .copied()
-            .chain(std::iter::once((
-                "recursion_eval_check.metal",
-                kernel.as_str(),
-            )))
-    {
-        source.push_str(&format!("\n#line 1 \"{name}\"\n"));
-        for line in contents.lines() {
-            match line.trim() {
-                "#pragma once" | "#include \"fp.h\"" | "#include \"fpext.h\"" => source.push('\n'),
-                s if s.starts_with("#include \"") => panic!("unknown Metal include: {s}"),
-                _ => {
-                    source.push_str(line);
-                    source.push('\n');
+            .chain(std::iter::once((filename, contents)))
+        {
+            source.push_str(&format!("\n#line 1 \"{name}\"\n"));
+            for line in contents.lines() {
+                match line.trim() {
+                    "#pragma once" | "#include \"fp.h\"" | "#include \"fpext.h\"" => {
+                        source.push('\n')
+                    }
+                    s if s.starts_with("#include \"") => panic!("unknown Metal include: {s}"),
+                    _ => {
+                        source.push_str(line);
+                        source.push('\n');
+                    }
                 }
             }
         }
+        let output = out_dir.join(filename);
+        fs::write(&output, source).unwrap();
+        println!("cargo:rustc-env={variable}={}", output.display());
     }
-    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("recursion.metal");
-    fs::write(&output, source).unwrap();
-    println!(
-        "cargo:rustc-env=RECURSION_METAL_SOURCE={}",
-        output.display()
-    );
 }

@@ -31,8 +31,9 @@ use crate::{
 use anyhow::{bail, ensure, Result};
 use metal::{CompileOptions, ComputePipelineDescriptor};
 use risc0_circuit_recursion_sys::{
-    risc0_circuit_recursion_cpu_accum, risc0_circuit_recursion_cpu_witgen, RawAccumBuffers,
-    RawExecBuffers, RawPreflightTrace, StepMode,
+    risc0_circuit_recursion_cpu_accum, risc0_circuit_recursion_cpu_eval_check,
+    risc0_circuit_recursion_cpu_witgen, RawAccumBuffers, RawExecBuffers, RawPreflightTrace,
+    StepMode,
 };
 use risc0_sys::ffi_wrap;
 use risc0_zkp::{
@@ -50,45 +51,78 @@ use risc0_zkp::{
 };
 
 const SOURCE: &str = include_str!(env!("RECURSION_METAL_SOURCE"));
+const SPLIT_SOURCE: &str = include_str!(env!("RECURSION_METAL_SPLIT_SOURCE"));
 static COMPLETED_CHECKS: AtomicU64 = AtomicU64::new(0);
 static EVALUATION_POINTS: AtomicU64 = AtomicU64::new(0);
+static CPU_DIFFERENTIAL_CHECKS: AtomicU64 = AtomicU64::new(0);
+
+fn split_enabled() -> bool {
+    std::env::var("RISC0_RECURSION_METAL_SPLIT").as_deref() != Ok("0")
+}
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct MetalRecursionStats {
     pub completed_constraint_checks: u64,
     pub evaluation_points: u64,
+    pub cpu_differential_checks: u64,
+    pub eval_check_split: bool,
 }
 
 pub fn metal_recursion_stats() -> MetalRecursionStats {
     MetalRecursionStats {
         completed_constraint_checks: COMPLETED_CHECKS.load(Ordering::Relaxed),
         evaluation_points: EVALUATION_POINTS.load(Ordering::Relaxed),
+        cpu_differential_checks: CPU_DIFFERENTIAL_CHECKS.load(Ordering::Relaxed),
+        eval_check_split: split_enabled(),
     }
 }
 
 pub fn metal_recursion_kernel_source() -> &'static str {
-    SOURCE
+    if split_enabled() {
+        SPLIT_SOURCE
+    } else {
+        SOURCE
+    }
 }
 
 pub(crate) struct MetalCircuitHal {
     hal: Arc<MetalHalPoseidon2>,
-    kernel: ComputePipelineDescriptor,
+    kernels: Vec<ComputePipelineDescriptor>,
+    split: bool,
 }
 
 impl MetalCircuitHal {
     fn new(hal: Arc<MetalHalPoseidon2>) -> Result<Self> {
+        let split = split_enabled();
         let options = CompileOptions::new();
         options.set_fast_math_enabled(false);
         let library = hal
             .device
-            .new_library_with_source(SOURCE, &options)
+            .new_library_with_source(if split { SPLIT_SOURCE } else { SOURCE }, &options)
             .map_err(|error| anyhow::anyhow!("recursion Metal compilation failed: {error}"))?;
-        let function = library
-            .get_function("eval_check", None)
-            .map_err(|error| anyhow::anyhow!("missing recursion Metal evaluator: {error}"))?;
-        let kernel = ComputePipelineDescriptor::new();
-        kernel.set_compute_function(Some(&function));
-        Ok(Self { hal, kernel })
+        let names: Vec<String> = if split {
+            (0..6)
+                .map(|part| format!("eval_check_part{part}"))
+                .collect()
+        } else {
+            vec!["eval_check".to_owned()]
+        };
+        let kernels = names
+            .iter()
+            .map(|name| {
+                let function = library.get_function(name, None).map_err(|error| {
+                    anyhow::anyhow!("missing recursion Metal evaluator {name}: {error}")
+                })?;
+                let kernel = ComputePipelineDescriptor::new();
+                kernel.set_compute_function(Some(&function));
+                Ok(kernel)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            hal,
+            kernels,
+            split,
+        })
     }
 
     fn validate_witness(
@@ -211,33 +245,77 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
         }
         assert_eq!(globals[GLOBAL_MIX].size(), CircuitImpl::MIX_SIZE);
         assert_eq!(globals[GLOBAL_OUT].size(), CircuitImpl::OUTPUT_SIZE);
-        let powers = self.hal.copy_from_extelem(
-            "recursion_poly_mix",
-            &map_pow(poly_mix, crate::info::POLY_MIX_POWERS),
-        );
+        let powers_host = map_pow(poly_mix, crate::info::POLY_MIX_POWERS);
+        let powers = self
+            .hal
+            .copy_from_extelem("recursion_poly_mix", &powers_host);
         let rou = BabyBearElem::ROU_FWD[po2 + log2_ceil(INV_RATE)];
-        self.hal.dispatch(
-            &self.kernel,
-            &[
-                check.as_arg(),
-                groups[REGISTER_GROUP_CTRL].as_arg(),
-                groups[REGISTER_GROUP_DATA].as_arg(),
-                groups[REGISTER_GROUP_ACCUM].as_arg(),
-                globals[GLOBAL_MIX].as_arg(),
-                globals[GLOBAL_OUT].as_arg(),
-                powers.as_arg(),
-                KernelArg::Integer(rou.as_u32_montgomery()),
-                KernelArg::Integer(po2 as u32),
-                KernelArg::Integer(domain as u32),
-            ],
-            domain as u64,
-            None,
-        );
+        let args = [
+            check.as_arg(),
+            groups[REGISTER_GROUP_CTRL].as_arg(),
+            groups[REGISTER_GROUP_DATA].as_arg(),
+            groups[REGISTER_GROUP_ACCUM].as_arg(),
+            globals[GLOBAL_MIX].as_arg(),
+            globals[GLOBAL_OUT].as_arg(),
+            powers.as_arg(),
+            KernelArg::Integer(rou.as_u32_montgomery()),
+            KernelArg::Integer(po2 as u32),
+            KernelArg::Integer(domain as u32),
+        ];
+        if self.split {
+            self.hal.with_batch("recursion_eval_check_split", || {
+                for kernel in &self.kernels {
+                    self.hal.dispatch(kernel, &args, domain as u64, None);
+                }
+            });
+        } else {
+            self.hal
+                .dispatch(&self.kernels[0], &args, domain as u64, None);
+        }
         COMPLETED_CHECKS.fetch_add(1, Ordering::Relaxed);
         EVALUATION_POINTS.fetch_add(domain as u64, Ordering::Relaxed);
+        if std::env::var("RISC0_RECURSION_METAL_CHECK_CPU").as_deref() == Ok("1") {
+            self.hal.assert_no_pending_batch();
+            let mut cpu = vec![BabyBearElem::new(0); check.size()];
+            let buffers = RawAccumBuffers {
+                ctrl: groups[REGISTER_GROUP_CTRL].as_ptr().cast(),
+                global: globals[GLOBAL_OUT].as_ptr().cast(),
+                data: groups[REGISTER_GROUP_DATA].as_ptr().cast(),
+                mix: globals[GLOBAL_MIX].as_ptr().cast(),
+                accum: groups[REGISTER_GROUP_ACCUM].as_ptr().cast(),
+            };
+            ffi_wrap(|| unsafe {
+                risc0_circuit_recursion_cpu_eval_check(
+                    &buffers,
+                    powers_host.as_ptr(),
+                    cpu.as_mut_ptr(),
+                    rou,
+                    po2 as u32,
+                    domain as u32,
+                )
+            })
+            .expect("recursion CPU constraint oracle failed");
+            let gpu = unsafe {
+                std::slice::from_raw_parts(check.as_ptr().cast::<BabyBearElem>(), check.size())
+            };
+            for (index, (actual, expected)) in gpu.iter().zip(cpu.iter()).enumerate() {
+                assert_eq!(
+                    actual.as_u32_montgomery(),
+                    expected.as_u32_montgomery(),
+                    "recursion Metal differs from CPU: po2={po2}, index={index}"
+                );
+            }
+            CPU_DIFFERENTIAL_CHECKS.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(
+                po2,
+                domain,
+                "recursion Metal valid-witness CPU differential passed"
+            );
+        }
         tracing::info!(
             po2,
             domain,
+            split = self.split,
             completed_dispatches = self.hal.completed_dispatches(),
             completed_command_buffers = self.hal.completed_command_buffers(),
             "Poseidon2 recursion Metal constraint check completed"

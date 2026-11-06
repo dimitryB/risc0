@@ -43,6 +43,13 @@ import ec_lazyfp
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, 'eval_check_split.cu')
 CHECK = '--check' in sys.argv[1:]
+BASE_OPTION = '--metal-base-output'
+BASE_OUTPUT = None
+if BASE_OPTION in sys.argv[1:]:
+    pos = sys.argv.index(BASE_OPTION)
+    if pos + 1 >= len(sys.argv) or sys.argv[pos + 1].startswith('--'):
+        sys.exit('eval_check_split: --metal-base-output requires a path')
+    BASE_OUTPUT = sys.argv[pos + 1]
 TARGET_OPS, GROUP_OPS = 2200, 3000
 EXPECT = 'total ops 12075 leaves 65 groups 6 max leaf 2049'
 target, gtarget = TARGET_OPS, GROUP_OPS
@@ -281,6 +288,8 @@ void eval_check_split(cudaStream_t stream, Fp* check, const Fp* ctrl, const Fp* 
 } // namespace risc0::circuit::recursion::cuda
 ''')
 
+if BASE_OUTPUT:
+    open(BASE_OUTPUT, 'w', newline='').write(new)
 new, counts = ec_lazyredc.rewrite(new)
 if counts != ec_lazyredc.EXPECT:
     sys.exit('eval_check_split: ec_lazyredc counts %s != EXPECT %s (input changed: re-validate with '
