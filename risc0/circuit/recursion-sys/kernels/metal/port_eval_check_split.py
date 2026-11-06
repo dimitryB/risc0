@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Port the pinned recursion gated-sum split to six ordered MSL kernels."""
+"""Port the pinned recursion gated-sum and lazy-REDC passes to six MSL kernels."""
 
 import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 
 def sha(data):
@@ -26,7 +27,7 @@ def extract_parts(source):
         start = source.index(signature) + len(signature)
         end = source.index("\n}\n", start)
         body = source[start:end]
-        assert "return " in body and "poly_mix[" in body
+        assert "return " in body and ("poly_mix[" in body or "rec_lz_add(" in body)
         assert not any(token in body for token in
                        ("__device__", "__HIP", "REC_", "reinterpret_cast", "std::"))
         parts.append(body)
@@ -34,13 +35,57 @@ def extract_parts(source):
 
 
 def port(source):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cuda"))
+    import ec_lazyredc
+    source, counts = ec_lazyredc.rewrite(source)
+    assert counts == ec_lazyredc.EXPECT, counts
     parts = extract_parts(source)
     output = [
-        "// Generated from recursion eval_check_split.py's pre-lazy gated-sum output.\n",
-        "// The six kernels keep the CUDA split's part order and sum regrouping.\n",
+        "// Generated from recursion eval_check_split.py's gated-sum and lazy-REDC passes.\n",
+        "// The six kernels keep the CUDA split's part order, sum regrouping and lazy reduction.\n",
         '#include <metal_stdlib>\n#include "fp.h"\n#include "fpext.h"\n',
         "using namespace metal;\nconstant size_t INV_RATE = 4;\n",
     ]
+    output.append(r'''
+struct RecLz { ulong a[4]; };
+inline RecLz rec_lz_zero() {
+  RecLz r;
+  for (int i = 0; i < 4; i++) r.a[i] = 0;
+  return r;
+}
+inline RecLz rec_lz_from(FpExt e) {
+  RecLz r;
+  for (int i = 0; i < 4; i++) r.a[i] = ulong(e.elems[i].asRaw()) << 32;
+  return r;
+}
+inline RecLz rec_lz_add_impl(RecLz r, int k, Fp c, const device FpExt* poly_mix) {
+  FpExt m = poly_mix[k];
+  uint cv = c.asRaw();
+  for (int i = 0; i < 4; i++) r.a[i] += ulong(m.elems[i].asRaw()) * cv;
+  return r;
+}
+inline RecLz rec_lz_fold(RecLz r) {
+  for (int i = 0; i < 4; i++) {
+    uint lo = uint(r.a[i]), hi = uint(r.a[i] >> 32);
+    hi = min(hi, hi - 0x78000001u);
+    hi = min(hi, hi - 0x78000001u);
+    r.a[i] = (ulong(hi) << 32) | lo;
+  }
+  return r;
+}
+inline FpExt rec_lz_fin(RecLz r) {
+  r = rec_lz_fold(r);
+  FpExt e;
+  for (int i = 0; i < 4; i++) {
+    uint red = uint(r.a[i]) * 0x77ffffffu;
+    ulong t = r.a[i] + ulong(red) * 0x78000001u;
+    uint v = uint(t >> 32);
+    e.elems[i] = Fp::fromRaw(v >= 0x78000001u ? v - 0x78000001u : v);
+  }
+  return e;
+}
+#define rec_lz_add(r,k,c) rec_lz_add_impl(r,k,c,poly_mix)
+''')
     for part, body in enumerate(parts):
         output.append(
             f"inline FpExt poly_fp_part{part}(uint32_t idx, uint32_t size, "
@@ -96,7 +141,7 @@ def main():
         "output_sha256": sha(result),
         "port_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "part_count": 6,
-        "cuda_split": "gated sums before lazy-REDC and HIP-specific variants",
+        "cuda_split": "gated sums plus pinned lazy-REDC before HIP-specific variants",
     }, indent=2) + "\n")
 
 
