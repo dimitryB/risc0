@@ -304,7 +304,7 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
         po2: usize,
         steps: usize,
     ) {
-        assert!((14..=20).contains(&po2), "RV32IM Metal supports po2 14..20");
+        assert!((14..=21).contains(&po2), "RV32IM Metal supports po2 14..21");
         assert_eq!(steps, 1usize << po2);
         assert_eq!(INV_RATE, 4);
         let domain = steps.checked_mul(INV_RATE).unwrap();
