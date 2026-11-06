@@ -75,7 +75,7 @@ intel = [
   "prove",
   "risc0-groth16-sys/intel",
 ]
-native-groth16 = ["dep:circom-witnesscalc", "dep:sha2", "dep:wtns-file", "dep:rayon", "prove"]
+native-groth16 = ["dep:circom-witnesscalc", "dep:sha2", "sha2/asm-aarch64", "dep:wtns-file", "dep:rayon", "prove"]
 prove = [
   "dep:cfg-if",
   "dep:risc0-core",

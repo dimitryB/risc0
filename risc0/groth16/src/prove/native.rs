@@ -7,9 +7,10 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::{BufWriter, Read, Write},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -25,10 +26,29 @@ struct Manifest {
 }
 struct Config {
     root: PathBuf,
+    identities: BTreeMap<String, FileIdentity>,
     timeout: Duration,
     threads: usize,
 }
 static CONFIG: OnceLock<std::result::Result<Config, String>> = OnceLock::new();
+
+#[derive(Clone, PartialEq, Eq)]
+struct FileIdentity {
+    size: u64,
+    modified_sec: i64,
+    modified_nsec: i64,
+    inode: u64,
+    device: u64,
+}
+
+struct VerifiedBundle {
+    root: PathBuf,
+    identities: BTreeMap<String, FileIdentity>,
+}
+
+type Verification = std::result::Result<VerifiedBundle, String>;
+type VerificationHandle = Mutex<Option<std::thread::JoinHandle<Verification>>>;
+static VERIFICATION: OnceLock<std::result::Result<VerificationHandle, String>> = OnceLock::new();
 
 fn number(name: &str, default: usize, max: usize) -> Result<usize> {
     let value = std::env::var(name)
@@ -39,18 +59,49 @@ fn number(name: &str, default: usize, max: usize) -> Result<usize> {
     Ok(value)
 }
 
-fn load() -> Result<Config> {
+fn identity(path: &Path) -> Result<FileIdentity> {
+    let metadata = path.metadata()?;
+    Ok(FileIdentity {
+        size: metadata.len(),
+        modified_sec: metadata.mtime(),
+        modified_nsec: metadata.mtime_nsec(),
+        inode: metadata.ino(),
+        device: metadata.dev(),
+    })
+}
+
+fn bundle_root() -> Result<PathBuf> {
     let root = PathBuf::from(
         std::env::var_os("RISC0_GROTH16_NATIVE_DIR")
             .context("set RISC0_GROTH16_NATIVE_DIR to the sealed native helper bundle")?,
     )
     .canonicalize()?;
+    // Keep the cheap architecture check on the startup path. The large-file
+    // manifest hashes run on the verification thread instead.
+    let mut header = [0u8; 8];
+    File::open(root.join("prover"))?.read_exact(&mut header)?;
     ensure!(
-        std::fs::metadata(root.join("manifest.json"))?.len() <= 16384,
+        header == [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1],
+        "native prover must be a Darwin ARM64 executable"
+    );
+    Ok(root)
+}
+
+fn verify_bundle(root: PathBuf) -> Result<VerifiedBundle> {
+    let mut identities = BTreeMap::new();
+    let manifest_path = root.join("manifest.json").canonicalize()?;
+    ensure!(manifest_path.parent() == Some(root.as_path()),
+        "native manifest escapes bundle");
+    let manifest_before = identity(&manifest_path)?;
+    ensure!(
+        manifest_before.size <= 16384,
         "native manifest exceeds size limit"
     );
-    let bytes = std::fs::read(root.join("manifest.json"))?;
+    let bytes = std::fs::read(&manifest_path)?;
     ensure!(bytes.len() <= 16384, "native manifest exceeds size limit");
+    ensure!(identity(&manifest_path)? == manifest_before,
+        "native manifest changed during verification");
+    identities.insert("manifest.json".into(), manifest_before);
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
     ensure!(
         manifest.schema_version == 1,
@@ -86,6 +137,7 @@ fn load() -> Result<Config> {
                 "unexpected native witness graph"
             );
         }
+        let before = identity(&path)?;
         let mut file = File::open(&path)?;
         let mut hash = Sha256::new();
         let mut buffer = [0u8; 65536];
@@ -100,25 +152,72 @@ fn load() -> Result<Config> {
             hex::encode(hash.finalize()) == *expected,
             "native artifact hash mismatch: {name}"
         );
+        ensure!(identity(&path)? == before,
+            "native artifact changed during verification: {name}");
+        identities.insert(name.into(), before);
     }
-    let mut header = [0u8; 8];
-    File::open(root.join("prover"))?.read_exact(&mut header)?;
-    ensure!(
-        header == [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1],
-        "native prover must be a Darwin ARM64 executable"
-    );
+    Ok(VerifiedBundle { root, identities })
+}
+
+/// Begin full manifest verification without delaying the worker handshake.
+/// `config()` joins this exact result before any helper can be started.
+pub fn start_verification() -> Result<()> {
+    if CONFIG.get().is_some() {
+        return Ok(());
+    }
+    VERIFICATION
+        .get_or_init(|| {
+            let root = bundle_root().map_err(|e| format!("{e:#}"))?;
+            let handle = std::thread::Builder::new()
+                .name("native-bundle-verify".into())
+                .spawn(move || verify_bundle(root).map_err(|e| format!("{e:#}")))
+                .map_err(|e| format!("{e:#}"))?;
+            Ok(Mutex::new(Some(handle)))
+        })
+        .as_ref()
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+fn load_config() -> Result<Config> {
+    let verified = match VERIFICATION.get() {
+        Some(Ok(state)) => match state.lock().unwrap().take() {
+            Some(handle) => handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("native bundle verification thread panicked"))?
+                .map_err(anyhow::Error::msg)?,
+            None => verify_bundle(bundle_root()?)?,
+        },
+        Some(Err(error)) => anyhow::bail!("{error}"),
+        None => verify_bundle(bundle_root()?)?,
+    };
     Ok(Config {
-        root,
+        root: verified.root,
+        identities: verified.identities,
         timeout: Duration::from_secs(number("RISC0_GROTH16_NATIVE_TIMEOUT", 1800, 1800)? as u64),
         threads: number("RISC0_GROTH16_NATIVE_THREADS", 6, 18)?,
     })
 }
 
+fn identities_match(config: &Config) -> bool {
+    config.identities.iter().all(|(name, expected)| {
+        let path = config.root.join(name);
+        path.canonicalize().ok().as_ref().is_some_and(|p| p.parent() == Some(config.root.as_path()))
+            && identity(&path).ok().as_ref() == Some(expected)
+    })
+}
+
 fn config() -> Result<&'static Config> {
-    CONFIG
-        .get_or_init(|| load().map_err(|e| format!("{e:#}")))
+    let config = CONFIG
+        .get_or_init(|| load_config().map_err(|e| format!("{e:#}")))
         .as_ref()
-        .map_err(|e| anyhow::anyhow!("{e}"))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if !identities_match(config) {
+        // An in-process verdict is never trusted after size, mtime, inode or
+        // device changes. Rehash instead of spawning a helper on stale assets.
+        verify_bundle(config.root.clone())?;
+    }
+    Ok(config)
 }
 
 /// Validate the helper bundle before worker admission.
