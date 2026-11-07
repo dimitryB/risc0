@@ -19,8 +19,8 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     mem, slice,
-    sync::{Arc, Mutex, OnceLock},
-    time::Instant,
+    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex, OnceLock},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use metal::objc::{sel, sel_impl};
@@ -93,6 +93,23 @@ const KERNEL_NAMES: &[&str] = &[
 
 const NTT_TILE_BITS: usize = 12;
 const NTT_TILE_SIZE: usize = 1 << NTT_TILE_BITS;
+
+static FIRST_COMPLETED_DISPATCH_EPOCH_NS: AtomicU64 = AtomicU64::new(0);
+
+fn mark_first_completed_dispatch() {
+    if FIRST_COMPLETED_DISPATCH_EPOCH_NS.load(Ordering::Relaxed) == 0 {
+        if let Ok(since_epoch) = SystemTime::now().duration_since(UNIX_EPOCH) {
+            let _ = FIRST_COMPLETED_DISPATCH_EPOCH_NS.compare_exchange(
+                0, since_epoch.as_nanos() as u64, Ordering::Relaxed, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Wall-clock marker for cross-process startup timing. Set on the first
+/// completed command buffer in this worker process.
+pub fn first_completed_dispatch_epoch_ns() -> u64 {
+    FIRST_COMPLETED_DISPATCH_EPOCH_NS.load(Ordering::Relaxed)
+}
 
 // The GPU becomes unstable as the number of concurrent provers grow.
 fn singleton() -> &'static ReentrantMutex<()> {
@@ -757,6 +774,7 @@ impl<MH: MetalHash> MetalHal<MH> {
             "Metal batch {} failed (command status {status:?})",
             batch.label
         );
+        mark_first_completed_dispatch();
         let gpu_start: f64 = unsafe { metal::objc::msg_send![batch.command_buffer, GPUStartTime] };
         let gpu_end: f64 = unsafe { metal::objc::msg_send![batch.command_buffer, GPUEndTime] };
         let valid_gpu_time = gpu_start > 0.0 && gpu_end > gpu_start;
@@ -995,6 +1013,7 @@ impl<MH: MetalHash> MetalHal<MH> {
                 MTLCommandBufferStatus::Completed,
                 "Metal kernel {kernel_name} failed (command status {status:?})"
             );
+            mark_first_completed_dispatch();
             // The pinned metal crate has no wrappers for these two MTLCommandBuffer
             // properties. The command has completed, so both timestamps are valid
             // when the driver supplies GPU timing. Keep a counter if it does not.
