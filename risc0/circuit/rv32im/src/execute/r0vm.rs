@@ -207,10 +207,6 @@ pub(crate) trait Risc0Context {
         // default no-op
     }
 
-    fn trap(&mut self, _cause: Exception) {
-        // default no-op
-    }
-
     /// Record what was read during execution so we can replay
     fn host_read(&mut self, fd: u32, buf: &mut [u8]) -> Result<u32>;
 
@@ -410,7 +406,7 @@ impl<'a, C: Risc0Context> Risc0Machine<'a, C> {
             HOST_ECALL_POSEIDON2 => self.ecall_poseidon2(),
             HOST_ECALL_SHA2 => self.ecall_sha2(),
             HOST_ECALL_BIGINT => self.ecall_bigint(),
-            _ => unimplemented!(),
+            a7 => bail!("Unknown machine ecall: {a7}"),
         }
     }
 
@@ -586,17 +582,11 @@ impl<'a, C: Risc0Context> Risc0Machine<'a, C> {
         }
         let bytes = self.ctx.load_region(LoadOp::Peek, ptr, len as usize)?;
         let rlen = self.ctx.host_write(fd, &bytes)?;
-        self.store_register(REG_A0, rlen)?;
-        self.next_pc();
-        self.ctx.on_ecall_cycle(
-            CycleState::HostWrite,
-            CycleState::Decode,
-            0,
-            0,
-            0,
-            EcallKind::Write,
-        )?;
-        Ok(false)
+        // The prover's preflight replays a host write from the wrong record (and the last of a
+        // segment from none), and the circuit bounds its fd where execution doesn't: no proof of a
+        // guest making one can verify. The standard kernel makes one only to report its panic, which
+        // ends the guest anyway; the host has seen the message.
+        bail!("Host write (fd {fd}, {rlen} bytes) cannot be proven by the rv32im prover")
     }
 
     fn ecall_poseidon2(&mut self) -> Result<bool> {
@@ -711,14 +701,9 @@ impl<T: Risc0Context> EmuContext for Risc0Machine<'_, T> {
             self.dump_registers(true)?;
             self.dump_registers(false)?;
         }
-        let dispatch_addr =
-            ByteAddr(self.load_memory(TRAP_DISPATCH_ADDR.waddr() + cause.as_u32())?);
-        if !dispatch_addr.is_aligned() || !is_kernel_memory(dispatch_addr) {
-            bail!("Invalid trap address: {dispatch_addr:?}, cause: {cause:?}");
-        }
-        self.enter_trap(dispatch_addr)?;
-        self.ctx.trap(cause);
-        Ok(false)
+        // The circuit has no trap step: a guest that sets up a trap table (its kernel, or a write
+        // through an ecall) and traps could execute on, and no proof of it could verify.
+        bail!("Trap cannot be proven by the rv32im circuit, cause: {cause:?}")
     }
 
     fn on_insn_decoded(

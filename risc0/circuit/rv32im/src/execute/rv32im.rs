@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use derive_more::Debug;
 use risc0_binfmt::{ByteAddr, WordAddr};
 
@@ -84,12 +84,6 @@ pub enum Exception {
     InvalidEcallDispatch(u32),
     #[allow(dead_code)]
     UserEnvCall(ByteAddr),
-}
-
-impl Exception {
-    pub fn as_u32(&self) -> u32 {
-        unsafe { *(self as *const Self as *const u32) }
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -279,10 +273,16 @@ impl Emulator {
             // J-format jal
             (0b1101111, _, _) => self.step_compute(ctx, InsnKind::Jal, decoded),
             // I-format jalr
-            (0b1100111, _, _) => self.step_compute(ctx, InsnKind::JalR, decoded),
+            // (The circuit decodes jalr with func3 0, mret and ecall/ebreak only as their exact
+            // words: any other encoding the guest could run and no proof of it could verify.)
+            (0b1100111, 0b000, _) => self.step_compute(ctx, InsnKind::JalR, decoded),
             // System instruction
-            (0b1110011, 0b000, 0b0011000) => self.step_system(ctx, InsnKind::Mret, decoded),
-            (0b1110011, 0b000, 0b0000000) => self.step_system(ctx, InsnKind::Eany, decoded),
+            (0b1110011, 0b000, 0b0011000) if decoded.insn == 0x3020_0073 => {
+                self.step_system(ctx, InsnKind::Mret, decoded)
+            }
+            (0b1110011, 0b000, 0b0000000) if decoded.rs1 == 0 && decoded.rd == 0 => {
+                self.step_system(ctx, InsnKind::Eany, decoded)
+            }
             _ => Ok(ctx
                 .trap(Exception::IllegalInstruction(decoded.insn, line!()))?
                 .then_some(InsnKind::Invalid)),
@@ -293,6 +293,12 @@ impl Emulator {
     pub fn step<C: EmuContext>(&mut self, ctx: &mut C) -> Result<()> {
         let pc = ctx.get_pc();
 
+        // The circuit decodes an instruction only at an aligned pc. Fetching rounds down, so one
+        // reached otherwise (an mret to a MEPC the guest wrote, a resume) ran here and no proof of it
+        // could.
+        if !pc.is_aligned() {
+            bail!("Misaligned pc: {pc:?}");
+        }
         if !ctx.check_insn_load(pc) {
             ctx.trap(Exception::InstructionFault)?;
             return Ok(());

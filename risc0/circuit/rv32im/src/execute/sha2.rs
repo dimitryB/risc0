@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use risc0_binfmt::WordAddr;
 use risc0_zkp::core::hash::sha::BLOCK_WORDS;
 
@@ -56,11 +56,18 @@ impl Sha2State {
 }
 
 pub fn ecall(ctx: &mut impl Risc0Context) -> Result<()> {
-    let state_in_addr = guest_addr(ctx.load_machine_register(LoadOp::Record, REG_A0)?)?.waddr();
-    let state_out_addr = guest_addr(ctx.load_machine_register(LoadOp::Record, REG_A1)?)?.waddr();
-    let data_addr = guest_addr(ctx.load_machine_register(LoadOp::Record, REG_A2)?)?.waddr();
+    // The circuit takes each pointer's word address as the byte address divided by four: a
+    // misaligned one names other memory there than here, rounded down.
+    fn word_addr(ctx: &mut impl Risc0Context, reg: usize) -> Result<WordAddr> {
+        let addr = guest_addr(ctx.load_machine_register(LoadOp::Record, reg)?)?;
+        addr.waddr_aligned()
+            .ok_or_else(|| anyhow!("Misaligned pointer in sha2 ecall: {addr:?}"))
+    }
+    let state_in_addr = word_addr(ctx, REG_A0)?;
+    let state_out_addr = word_addr(ctx, REG_A1)?;
+    let data_addr = word_addr(ctx, REG_A2)?;
     let count = ctx.load_machine_register(LoadOp::Record, REG_A3)? & 0xffff;
-    let k_addr = guest_addr(ctx.load_machine_register(LoadOp::Record, REG_A4)?)?.waddr();
+    let k_addr = word_addr(ctx, REG_A4)?;
     tracing::trace!("sha2: {count} blocks");
 
     if count > MAX_SHA_COUNT {

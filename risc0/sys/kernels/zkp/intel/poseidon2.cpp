@@ -127,6 +127,136 @@ static void ensure_poseidon2_device_constants(sycl::queue& q) {
 #include "poseidon2_commit_cl.inc"  // defines POSEIDON2_COMMIT_CL_SRC
 #include "poseidon2_lift_a.inc"     // defines POSEIDON2_LIFT_A (v9 DPAS tiles)
 
+// ============================================================================
+// The OpenCL kernels compiled ahead of time (risc0-sys build.rs,
+// poseidon2_ahead_of_time): one native binary per Intel target the build
+// compiles for and per source, loaded through Level Zero. Any other GPU, or a
+// build without targets, compiles the embedded source as before.
+// ============================================================================
+#if __has_include("poseidon2_aot.inc")
+#include "poseidon2_aot.inc"
+#else
+struct Poseidon2Aot { const char* device; const char* source; const unsigned char* data; size_t size; };
+static const Poseidon2Aot* const POSEIDON2_AOT = nullptr;
+static const size_t POSEIDON2_AOT_COUNT = 0;
+#endif
+#include <level_zero/ze_api.h>
+#include <sycl/ext/oneapi/backend/level_zero.hpp>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+// The Level Zero calls, looked up at run time: the SYCL runtime's Level Zero
+// adapter has the loader in the process already, and linking it here would
+// make this library need it wherever it is built.
+struct Poseidon2ZeApi {
+    decltype(&zeModuleCreate) module_create = nullptr;
+    decltype(&zeKernelCreate) kernel_create = nullptr;
+    decltype(&zeModuleBuildLogGetString) log_get = nullptr;
+    decltype(&zeModuleBuildLogDestroy) log_destroy = nullptr;
+};
+
+static const Poseidon2ZeApi* poseidon2_ze_api() {
+    static Poseidon2ZeApi api;
+    static bool ok = [] {
+#if defined(_WIN32)
+        HMODULE h = GetModuleHandleA("ze_loader.dll");
+        if (!h) h = LoadLibraryA("ze_loader.dll");
+        auto sym = [&](const char* n) -> void* { return h ? reinterpret_cast<void*>(GetProcAddress(h, n)) : nullptr; };
+#else
+        void* h = dlopen("libze_loader.so.1", RTLD_NOW | RTLD_NOLOAD);
+        if (!h) h = dlopen("libze_loader.so.1", RTLD_NOW);
+        auto sym = [&](const char* n) -> void* { return h ? dlsym(h, n) : nullptr; };
+#endif
+        api.module_create = reinterpret_cast<decltype(api.module_create)>(sym("zeModuleCreate"));
+        api.kernel_create = reinterpret_cast<decltype(api.kernel_create)>(sym("zeKernelCreate"));
+        api.log_get = reinterpret_cast<decltype(api.log_get)>(sym("zeModuleBuildLogGetString"));
+        api.log_destroy = reinterpret_cast<decltype(api.log_destroy)>(sym("zeModuleBuildLogDestroy"));
+        return api.module_create && api.kernel_create;
+    }();
+    return ok ? &api : nullptr;
+}
+
+// The ocloc name of the device's architecture, for the ones a build can target.
+static const char* poseidon2_aot_device(const sycl::device& dev) {
+    namespace sxa = sycl::ext::oneapi::experimental;
+    switch (dev.get_info<sxa::info::device::architecture>()) {
+    case sxa::architecture::intel_gpu_bmg_g21: return "bmg_g21";
+    case sxa::architecture::intel_gpu_bmg_g31: return "bmg_g31";
+    case sxa::architecture::intel_gpu_acm_g10: return "acm_g10";
+    case sxa::architecture::intel_gpu_acm_g11: return "acm_g11";
+    case sxa::architecture::intel_gpu_acm_g12: return "acm_g12";
+    default: return nullptr;
+    }
+}
+
+struct Poseidon2Native {
+    sycl::kernel_bundle<sycl::bundle_state::executable> bundle;
+    ze_module_handle_t module;
+};
+
+// The device's ahead-of-time binary of `source` ("gate0", "commit") as an
+// executable bundle, or nothing: no binary for this device, not Level Zero,
+// or the driver refused it (then the source is compiled instead).
+static std::optional<Poseidon2Native> poseidon2_native(sycl::queue& q, const char* source) {
+    if (POSEIDON2_AOT_COUNT == 0 || q.get_backend() != sycl::backend::ext_oneapi_level_zero) return std::nullopt;
+    const char* device = poseidon2_aot_device(q.get_device());
+    if (!device) return std::nullopt;
+    const Poseidon2Aot* aot = nullptr;
+    for (size_t i = 0; i < POSEIDON2_AOT_COUNT; ++i) {
+        if (!std::strcmp(POSEIDON2_AOT[i].device, device) && !std::strcmp(POSEIDON2_AOT[i].source, source)) {
+            aot = &POSEIDON2_AOT[i];
+        }
+    }
+    const Poseidon2ZeApi* ze = poseidon2_ze_api();
+    if (!aot || !ze) return std::nullopt;
+    auto ze_ctx = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(q.get_context());
+    auto ze_dev = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(q.get_device());
+    ze_module_desc_t desc = {};
+    desc.stype = ZE_STRUCTURE_TYPE_MODULE_DESC;
+    desc.format = ZE_MODULE_FORMAT_NATIVE;
+    desc.inputSize = aot->size;
+    desc.pInputModule = aot->data;
+    ze_module_handle_t module = nullptr;
+    ze_module_build_log_handle_t log = nullptr;
+    ze_result_t r = ze->module_create(ze_ctx, ze_dev, &desc, &module, &log);
+    if (log && ze->log_get && ze->log_destroy) {
+        if (r != ZE_RESULT_SUCCESS) {
+            size_t n = 0;
+            ze->log_get(log, &n, nullptr);
+            std::string text(n, '\0');
+            ze->log_get(log, &n, text.data());
+            std::fprintf(stderr, "[poseidon2] %s binary for %s refused (0x%x), compiling the source: %s\n",
+                         source, device, static_cast<unsigned>(r), text.c_str());
+        }
+        ze->log_destroy(log);
+    }
+    if (r != ZE_RESULT_SUCCESS) return std::nullopt;
+    auto bundle = sycl::make_kernel_bundle<sycl::backend::ext_oneapi_level_zero, sycl::bundle_state::executable>(
+        {module, sycl::ext::oneapi::level_zero::ownership::transfer}, q.get_context());
+    return Poseidon2Native{bundle, module};
+}
+
+static sycl::kernel poseidon2_native_kernel(const Poseidon2Native& native, sycl::queue& q, const std::string& name) {
+    ze_kernel_desc_t desc = {};
+    desc.stype = ZE_STRUCTURE_TYPE_KERNEL_DESC;
+    desc.pKernelName = name.c_str();
+    ze_kernel_handle_t kernel = nullptr;
+    if (poseidon2_ze_api()->kernel_create(native.module, &desc, &kernel) != ZE_RESULT_SUCCESS) {
+        throw std::runtime_error("zeKernelCreate failed for " + name);
+    }
+    return sycl::make_kernel<sycl::backend::ext_oneapi_level_zero>(
+        {native.bundle, kernel, sycl::ext::oneapi::level_zero::ownership::transfer}, q.get_context());
+}
+
 static constexpr uint32_t POSEIDON2_R2_SQ = 1172168163u;  // R^2 mod P
 static constexpr uint32_t POSEIDON2_RC_PADDED = 696;       // gate0 padded layout
 
@@ -188,34 +318,51 @@ static void ensure_poseidon2_opencl_kernels(sycl::queue& q) {
 
     if (!g_k_hash_fold) {
         namespace sx = sycl::ext::oneapi::experimental;
-        auto src_kb = sx::create_kernel_bundle_from_source(
-            q.get_context(), sx::source_language::opencl,
-            std::string(POSEIDON2_GATE0_CL_SRC));
-        // Use _mont_io variants: skip to_mont(input)/from_mont(output) since
-        // the ESIMD prover pipeline keeps buffers in Mont form throughout.
-        // In 256-GRF mode first. Alchemist (Arc A770) cannot run these kernels' 256-wide SIMD32
-        // work-groups in 256-GRF mode (UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE from
-        // urKernelCreate), so there they are built in the default mode.
-        auto build_gate0 = [&](bool large_grf) {
-            std::string log;
-            std::vector<std::string> opts = {"-cl-std=CL3.0", "-cl-mad-enable"};
-            if (large_grf) opts.push_back("-cl-intel-256-GRF-per-thread");
-            auto exe_kb = sx::build(src_kb, sx::properties{
-                sx::build_options(opts), sx::save_log(&log)});
-            if (!log.empty()) {
-                std::fprintf(stderr, "[poseidon2-opencl] build log:\n%s\n", log.c_str());
+        // The ahead-of-time binaries first (built in the mode the source build ends up in).
+        static std::optional<Poseidon2Native> native_gate0 = poseidon2_native(q, "gate0");
+        if (native_gate0) {
+            try {
+                g_k_hash_fold         = poseidon2_native_kernel(*native_gate0, q, "poseidon2_hash_fold_mont_io");
+                g_k_hash_rows_24      = poseidon2_native_kernel(*native_gate0, q, "poseidon2_hash_rows_24_mont_io");
+                g_k_hash_rows_generic = poseidon2_native_kernel(*native_gate0, q, "poseidon2_hash_rows_mont_io");
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[poseidon2] gate0 binary unusable, compiling the source: %s\n", e.what());
+                g_k_hash_fold.reset();
+                g_k_hash_rows_24.reset();
+                g_k_hash_rows_generic.reset();
+                native_gate0.reset();
             }
-            g_k_hash_fold         = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_fold_mont_io");
-            g_k_hash_rows_24      = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_24_mont_io");
-            g_k_hash_rows_generic = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_mont_io");
-        };
-        try {
-            build_gate0(true);
-        } catch (const sycl::exception&) {
-            g_k_hash_fold.reset();
-            g_k_hash_rows_24.reset();
-            g_k_hash_rows_generic.reset();
-            build_gate0(false);
+        }
+        if (!native_gate0) {
+            auto src_kb = sx::create_kernel_bundle_from_source(
+                q.get_context(), sx::source_language::opencl,
+                std::string(POSEIDON2_GATE0_CL_SRC));
+            // Use _mont_io variants: skip to_mont(input)/from_mont(output) since
+            // the ESIMD prover pipeline keeps buffers in Mont form throughout.
+            // In 256-GRF mode first. Alchemist (Arc A770) cannot run these kernels' 256-wide SIMD32
+            // work-groups in 256-GRF mode (UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE from
+            // urKernelCreate), so there they are built in the default mode.
+            auto build_gate0 = [&](bool large_grf) {
+                std::string log;
+                std::vector<std::string> opts = {"-cl-std=CL3.0", "-cl-mad-enable"};
+                if (large_grf) opts.push_back("-cl-intel-256-GRF-per-thread");
+                auto exe_kb = sx::build(src_kb, sx::properties{
+                    sx::build_options(opts), sx::save_log(&log)});
+                if (!log.empty()) {
+                    std::fprintf(stderr, "[poseidon2-opencl] build log:\n%s\n", log.c_str());
+                }
+                g_k_hash_fold         = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_fold_mont_io");
+                g_k_hash_rows_24      = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_24_mont_io");
+                g_k_hash_rows_generic = exe_kb.ext_oneapi_get_kernel("poseidon2_hash_rows_mont_io");
+            };
+            try {
+                build_gate0(true);
+            } catch (const sycl::exception&) {
+                g_k_hash_fold.reset();
+                g_k_hash_rows_24.reset();
+                g_k_hash_rows_generic.reset();
+                build_gate0(false);
+            }
         }
         // Commit-path kernels: separate small bundle built in 128-GRF mode
         // (SIMD16, 8 threads/EU; state fits without spill). Measured 185 -> 134 ms
@@ -224,13 +371,21 @@ static void ensure_poseidon2_opencl_kernels(sycl::queue& q) {
         const bool want_fold_v3 = !std::getenv("RISC0_P2_FOLD_V3_OFF");
         if (want_v6 || want_fold_v3) {
             try {
-                auto src2 = sx::create_kernel_bundle_from_source(
-                    q.get_context(), sx::source_language::opencl,
-                    std::string(POSEIDON2_COMMIT_CL_SRC));
-                std::string log2;
-                std::vector<std::string> opts2 = {"-cl-std=CL3.0", "-cl-mad-enable"};
-                auto exe2 = sx::build(src2, sx::properties{sx::build_options(opts2), sx::save_log(&log2)});
-                if (!log2.empty()) std::fprintf(stderr, "[poseidon2-commit] build log:\n%s\n", log2.c_str());
+                static std::optional<Poseidon2Native> native_commit = poseidon2_native(q, "commit");
+                std::optional<sycl::kernel_bundle<sycl::bundle_state::executable>> exe2;
+                if (!native_commit) {
+                    auto src2 = sx::create_kernel_bundle_from_source(
+                        q.get_context(), sx::source_language::opencl,
+                        std::string(POSEIDON2_COMMIT_CL_SRC));
+                    std::string log2;
+                    std::vector<std::string> opts2 = {"-cl-std=CL3.0", "-cl-mad-enable"};
+                    exe2 = sx::build(src2, sx::properties{sx::build_options(opts2), sx::save_log(&log2)});
+                    if (!log2.empty()) std::fprintf(stderr, "[poseidon2-commit] build log:\n%s\n", log2.c_str());
+                }
+                auto get2 = [&](const std::string& name) -> sycl::kernel {
+                    return native_commit ? poseidon2_native_kernel(*native_commit, q, name)
+                                         : exe2->ext_oneapi_get_kernel(name);
+                };
                 // SIMD16 + madw(zero addend) + 1-block register prefetch. Robust to the
                 // GRF mode: 152 ms (IGC_TotalGRFNum=256 forced, as in the bench scripts) /
                 // 135 ms (128 GRF) vs 185 ms production, 211 cols x 2^22. The NEO persistent
@@ -262,8 +417,8 @@ static void ensure_poseidon2_opencl_kernels(sycl::queue& q) {
                     }
                 }
                 g_rows_lws = (rname == "v6" || rname == "v7pf" || rname == "v7s16") ? 256 : 1024;
-                g_k_hash_rows_v6 = exe2.ext_oneapi_get_kernel("poseidon2_hash_rows_mont_io_" + rname);
-                g_k_hash_fold_v3 = exe2.ext_oneapi_get_kernel("poseidon2_hash_fold_mont_io_" + fname);
+                g_k_hash_rows_v6 = get2("poseidon2_hash_rows_mont_io_" + rname);
+                g_k_hash_fold_v3 = get2("poseidon2_hash_fold_mont_io_" + fname);
                 g_rows_diag = (rname == "v9") ? reinterpret_cast<uint32_t*>(g_d_lift_a) : g_d_diag;
                 g_fold_diag = (fname == "v9") ? reinterpret_cast<uint32_t*>(g_d_lift_a) : g_d_diag;
                 // v7/v9 rows require 1024-wide work-groups; if the JIT could not
@@ -274,7 +429,7 @@ static void ensure_poseidon2_opencl_kernels(sycl::queue& q) {
                 if (rows_max < g_rows_lws) {
                     std::fprintf(stderr, "[poseidon2-commit] %s rows kernel max WG %zu < %zu; using v6\n",
                                  rname.c_str(), rows_max, g_rows_lws);
-                    g_k_hash_rows_v6 = exe2.ext_oneapi_get_kernel("poseidon2_hash_rows_mont_io_v6");
+                    g_k_hash_rows_v6 = get2("poseidon2_hash_rows_mont_io_v6");
                     g_rows_lws = 256;
                     g_rows_diag = g_d_diag;
                 }

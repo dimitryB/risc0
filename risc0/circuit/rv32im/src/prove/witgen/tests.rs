@@ -160,12 +160,12 @@ fn intel_parallel_matches_cpu_seq() {
 /// Under the RISC Zero 3.0 guest ABI, sys_poseidon2 passes word addresses while
 /// the circuit reads byte addresses, so any call with a non-null pointer cannot
 /// be proven on any backend (fixed upstream only in v5, risc0#3431). Execution
-/// matches upstream 3.0; preflight must reject the segment with a clear error
-/// instead of producing an inconsistent witness.
+/// refuses the call (as the preflight would the segment), so that a guest making
+/// it fails before a proof is attempted.
 #[test]
-fn poseidon2_ecall_rejected_by_preflight() {
+fn poseidon2_ecall_refused_at_execution() {
     let image = MemoryImage::new_kernel(testutil::kernel::poseidon2(2));
-    let session = testutil::execute(
+    let err = testutil::execute(
         image,
         DEFAULT_SEGMENT_LIMIT_PO2,
         MAX_INSN_CYCLES,
@@ -173,15 +173,11 @@ fn poseidon2_ecall_rejected_by_preflight() {
         &testutil::NullSyscall,
         None,
     )
-    .unwrap();
-    let mut rng = rand::rng();
-    let rand_z = ExtVal::random(&mut rng);
-    let err = PreflightResults::new(&session.segments[0], rand_z)
-        .err()
-        .expect("preflight must reject a non-null sys_poseidon2 call");
+    .err()
+    .expect("execution must refuse a sys_poseidon2 call");
     assert!(
-        err.to_string().contains("sys_poseidon2"),
-        "unexpected error: {err}"
+        format!("{err:#}").contains("sys_poseidon2 cannot be proven"),
+        "unexpected error: {err:#}"
     );
 }
 

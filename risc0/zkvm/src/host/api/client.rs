@@ -100,6 +100,7 @@ impl Client {
         opts: &ProverOpts,
         binary: Asset,
     ) -> Result<ProveInfo> {
+        env.refuse_random_seed("r0vm")?;
         let mut conn = self.connect()?;
 
         let request = pb::api::ServerRequest {
@@ -138,6 +139,7 @@ impl Client {
     where
         F: FnMut(SegmentInfo, Asset) -> Result<()>,
     {
+        env.refuse_random_seed("r0vm")?;
         let mut conn = self.connect()?;
 
         let request = pb::api::ServerRequest {

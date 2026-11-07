@@ -83,8 +83,15 @@ __device__ __forceinline__ fr_t twv(const Tw& tw, unsigned e) {
 enum : unsigned { F_DISCARD_IN = 1, F_CS_OUT = 2 };
 #ifndef __HIPCC__
 __device__ __forceinline__ void st_cs(fr_t* p, fr_t x) { asm volatile("st.global.cs.u32 [%0], %1;" :: "l"(p), "r"(*(uint32_t*)&x) : "memory"); }
-// the 128-byte line's contents become undefined; it is dropped from L2 without a write-back
-__device__ __forceinline__ void discard_l2(const void* p) { asm volatile("discard.global.L2 [%0], 128;" :: "l"(p) : "memory"); }
+// the 128-byte line's contents become undefined; it is dropped from L2 without a write-back.
+// `discard` needs sm_80: on Turing the line is left for L2 to evict, as any other.
+__device__ __forceinline__ void discard_l2(const void* p) {
+#if __CUDA_ARCH__ >= 800
+    asm volatile("discard.global.L2 [%0], 128;" :: "l"(p) : "memory");
+#else
+    (void)p;
+#endif
+}
 #else
 __device__ __forceinline__ void st_cs(fr_t* p, fr_t x) { *p = x; }
 __device__ __forceinline__ void discard_l2(const void*) {}

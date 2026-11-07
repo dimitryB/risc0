@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use risc0_binfmt::WordAddr;
 use risc0_zkp::{
     core::{
@@ -289,6 +289,18 @@ impl Poseidon2 {
         let buf_out_addr = ctx.load_machine_register(LoadOp::Record, REG_A2)?;
         let bits_count = ctx.load_machine_register(LoadOp::Record, REG_A3)?;
         let mut p2 = Poseidon2State::new_ecall(state_addr, buf_in_addr, buf_out_addr, bits_count);
+        // The circuit reads the pointers as byte addresses, the 3.0 guest ABI passes word addresses,
+        // and the preflight refuses any call with one that isn't null (see `unprovable_poseidon2`).
+        // With null ones, a call hashes up to 65,535 blocks of the zero page: one instruction of
+        // ~700,000 cycles, past what a segment leaves one. No guest can prove a call that does
+        // anything: refused, so that one making it fails at execution rather than executing
+        // cleanly and failing every proof.
+        ensure!(
+            state_addr == 0 && buf_in_addr == 0 && buf_out_addr == 0 && p2.count == 0,
+            "sys_poseidon2 cannot be proven by the RISC Zero 3.0 rv32im circuit \
+             (a0={state_addr:#010x}, a1={buf_in_addr:#010x}, a2={buf_out_addr:#010x}, \
+             a3={bits_count:#010x})"
+        );
         p2.rest(ctx, CycleState::Decode)
     }
 }

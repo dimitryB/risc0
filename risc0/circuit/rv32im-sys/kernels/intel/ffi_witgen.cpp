@@ -240,15 +240,38 @@ class WitgenAccumScan;
 // The width of a one-work-group scan: `want`, halved until the device runs kernel `K` that wide.
 // 1024 on Battlemage; 512 on Alchemist (Arc A770), where these kernels, built in 256-GRF mode, run
 // at most 512 work-items per work-group.
+//
+// On those cards the limit comes from the card's architecture, not from the kernel: asking the
+// kernel (kernel_device_specific::work_group_size) takes its executable kernel bundle, and oneAPI
+// 2026.0's runtime picks the bundle's ahead-of-time image without checking which card it was
+// compiled for, where a kernel launch picks the card's own. On an Arc B580 it picked the Arc A770's
+// image, which the driver rejects ("Invalid target device"), recompiling this whole module from
+// SPIR-V instead: about 16 minutes on the first proof. Any other GPU is still asked through the
+// kernel.
 template <typename K>
 static uint32_t scan_width(sycl::queue& q, uint32_t want) {
   static uint32_t width = 0;
   if (width == 0) {
+    namespace syclex = sycl::ext::oneapi::experimental;
     auto dev = q.get_device();
-    auto id = sycl::get_kernel_id<K>();
-    auto kb = sycl::get_kernel_bundle<sycl::bundle_state::executable>(q.get_context(), {dev}, {id});
-    size_t max = kb.get_kernel(id).template get_info<
-        sycl::info::kernel_device_specific::work_group_size>(dev);
+    size_t max;
+    switch (dev.get_info<syclex::info::device::architecture>()) {
+    case syclex::architecture::intel_gpu_bmg_g21:
+    case syclex::architecture::intel_gpu_bmg_g31:
+      max = 1024;
+      break;
+    case syclex::architecture::intel_gpu_acm_g10:
+      max = 512;
+      break;
+    default: {
+      auto id = sycl::get_kernel_id<K>();
+      auto kb =
+          sycl::get_kernel_bundle<sycl::bundle_state::executable>(q.get_context(), {dev}, {id});
+      max = kb.get_kernel(id).template get_info<
+          sycl::info::kernel_device_specific::work_group_size>(dev);
+    }
+    }
+    max = std::min<size_t>(max, dev.get_info<sycl::info::device::max_work_group_size>());
     uint32_t w = want;
     while (w > 1 && w > max) w >>= 1;
     width = w;

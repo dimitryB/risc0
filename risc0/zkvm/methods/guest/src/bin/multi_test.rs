@@ -44,7 +44,7 @@ use risc0_zkvm_methods::multi_test::{MultiTestSpec, SYS_MULTI_TEST, SYS_MULTI_TE
 use risc0_zkvm_platform::{
     fileno,
     syscall::{
-        bigint, ecall, sys_bigint, sys_exit, sys_fork, sys_keccak, sys_log, sys_pipe,
+        bigint, ecall, sys_bigint, sys_exit, sys_fork, sys_halt, sys_keccak, sys_log, sys_pipe,
         sys_poseidon2, sys_read, sys_read_words, sys_write, DIGEST_WORDS,
     },
     PAGE_SIZE,
@@ -134,6 +134,11 @@ fn main() {
         },
         MultiTestSpec::Halt(exit_code) => {
             env::exit(exit_code);
+        }
+        MultiTestSpec::HaltWithOutputDigest(digest) => {
+            env::commit(&1u32);
+            let words: [u32; DIGEST_WORDS] = digest.as_words().try_into().unwrap();
+            sys_halt(0, &words);
         }
         MultiTestSpec::PauseResume(exit_code) => {
             env::log("before");

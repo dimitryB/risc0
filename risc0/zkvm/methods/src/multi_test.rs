@@ -57,6 +57,9 @@ pub enum MultiTestSpec {
     EventTrace,
     Fault,
     Halt(u8),
+    /// Commit something to the journal, then halt (exit 0) with this output digest instead of the
+    /// one that commits to it.
+    HaltWithOutputDigest(Digest),
     KeccakUpdate,
     KeccakUpdate2,
     KeccakUnion(usize),

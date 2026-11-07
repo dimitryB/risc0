@@ -298,28 +298,44 @@ struct DeviceCache {
     CUDA_OK(cudaMallocAsync(&d_tableU8, (1 << 8) * sizeof(uint32_t), stream));
     CUDA_OK(cudaMallocAsync(&d_tableU16, (1 << 16) * sizeof(uint32_t), stream));
 #ifndef __HIPCC__
-    // CUDA-only persisting-L2 cache tuning (Ada+). HIP/AMD has no equivalent of
+    // CUDA-only persisting-L2 cache tuning (Ampere+). HIP/AMD has no equivalent of
     // cudaLimitPersistingL2CacheSize / cudaStreamAttributeAccessPolicyWindow, so
     // skip this pure performance optimization on ROCm.
+    //
+    // A best-effort hint, so the carve-out is clamped to what the card allows and every error
+    // is cleared. A fixed 24 MB carve-out fails with "invalid argument" on a card that allows
+    // less (20 MB on an RTX 5060 Ti, none before Ampere), and the next
+    // CUDA_OK(cudaGetLastError()) in witgen then reported it as its own launch failure: the
+    // first proof of every fresh process failed there.
     {
-      static bool s_persisting_set = false;
-      if (!s_persisting_set) {
-        size_t l2_persist_max = 0;
-        cudaDeviceGetLimit(&l2_persist_max, cudaLimitPersistingL2CacheSize);
-        size_t want = (size_t)24 << 20; // 24 MB carve-out (fits 257 KB easily)
-        if (l2_persist_max < want) {
-          (void)cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want);
-        }
-        s_persisting_set = true;
+      int dev = 0, persist_hw_max = 0, window_hw_max = 0;
+      if (cudaGetDevice(&dev) == cudaSuccess) {
+        (void)cudaDeviceGetAttribute(&persist_hw_max, cudaDevAttrMaxPersistingL2CacheSize, dev);
+        (void)cudaDeviceGetAttribute(&window_hw_max, cudaDevAttrMaxAccessPolicyWindowSize, dev);
       }
-      cudaStreamAttrValue attr = {};
-      attr.accessPolicyWindow.base_ptr = d_tableU16;
-      attr.accessPolicyWindow.num_bytes =
-          ((size_t)((1 << 16) * sizeof(uint32_t))) + ((1 << 8) * sizeof(uint32_t));
-      attr.accessPolicyWindow.hitRatio = 1.0f;
-      attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
-      attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
-      (void)cudaStreamSetAttribute(stream, cudaStreamAttributeAccessPolicyWindow, &attr);
+      if (persist_hw_max > 0 && window_hw_max > 0) {
+        static bool s_persisting_set = false;
+        if (!s_persisting_set) {
+          size_t l2_persist_max = 0;
+          (void)cudaDeviceGetLimit(&l2_persist_max, cudaLimitPersistingL2CacheSize);
+          // 24 MB carve-out where the card allows it (fits 257 KB easily)
+          size_t want = std::min((size_t)24 << 20, (size_t)persist_hw_max);
+          if (l2_persist_max < want) {
+            (void)cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want);
+          }
+          s_persisting_set = true;
+        }
+        cudaStreamAttrValue attr = {};
+        attr.accessPolicyWindow.base_ptr = d_tableU16;
+        attr.accessPolicyWindow.num_bytes =
+            std::min(((size_t)((1 << 16) * sizeof(uint32_t))) + ((1 << 8) * sizeof(uint32_t)),
+                     (size_t)window_hw_max);
+        attr.accessPolicyWindow.hitRatio = 1.0f;
+        attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
+        attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
+        (void)cudaStreamSetAttribute(stream, cudaStreamAttributeAccessPolicyWindow, &attr);
+      }
+      (void)cudaGetLastError();
     }
 #endif
   }

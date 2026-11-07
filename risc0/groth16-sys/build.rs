@@ -38,9 +38,14 @@ fn build_intel_kernels() {
     println!("cargo:rerun-if-changed=kernels/intel");
     let icpx = risc0_build_kernel::find_icpx();
     let out_dir = env::var("OUT_DIR").map(PathBuf::from).unwrap();
+    // Ahead of time for the build's Intel targets (`RISC0_INTEL_SYCL_TARGETS`, as rv32im, recursion
+    // and keccak are), with SPIR-V for any other GPU. Built as SPIR-V alone, the driver compiled the
+    // prover on the card at its first Groth16 proof (about 2 minutes on an Arc B580). The options are
+    // those that compile used, so the code is the same, only built earlier.
     let args: Vec<std::ffi::OsString> = ["-fsycl", "-std=c++17", "-O3", "-Ikernels/intel"]
         .iter()
         .map(Into::into)
+        .chain([risc0_build_kernel::intel_sycl_targets_arg().into()])
         .collect();
     let output = risc0_build_kernel::intel_build_library(
         &icpx,

@@ -115,6 +115,7 @@ pub struct ExecutorEnv<'a> {
     pub(crate) input_digest: Option<Digest>,
     pub(crate) coprocessor: Option<CoprocessorCallbackRef<'a>>,
     pub(crate) povw_job_id: Option<PovwJobId>,
+    pub(crate) random_seed: Option<[u8; 32]>,
 }
 
 impl<'a> ExecutorEnv<'a> {
@@ -129,6 +130,18 @@ impl<'a> ExecutorEnv<'a> {
     /// ```
     pub fn builder() -> ExecutorEnvBuilder<'a> {
         ExecutorEnvBuilder::default()
+    }
+
+    /// Fail if this environment sets a [random seed][ExecutorEnvBuilder::random_seed], for a
+    /// prover that executes the guest somewhere the seed can't follow. Running there would
+    /// silently answer `sys_rand` with fresh entropy instead.
+    pub(crate) fn refuse_random_seed(&self, prover: &str) -> Result<()> {
+        if self.random_seed.is_some() {
+            bail!(
+                "the {prover} prover does not support ExecutorEnv::random_seed; use a local prover"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -475,6 +488,34 @@ impl<'a> ExecutorEnvBuilder<'a> {
     /// See also [PovwJobId]
     pub fn povw(&mut self, povw_job_id: impl Into<PovwJobId>) -> &mut Self {
         self.inner.povw_job_id = Some(povw_job_id.into());
+        self
+    }
+
+    /// Answer the guest's `sys_rand` from a stream determined by `seed`, instead of fresh host
+    /// entropy.
+    ///
+    /// `sys_rand` is the guest's only source of randomness: `getrandom`, the keys of std's
+    /// `HashMap`, and the entropy the guest mixes into its memory image at start all come from it.
+    /// Two executions of the same guest, input and seed therefore run identically, so an execution
+    /// made to size a program (its cycles, exit code and journal) predicts the execution that
+    /// proves it. Without a seed, a guest can branch on its random bytes and behave differently
+    /// each time it runs.
+    ///
+    /// Proofs are unchanged: no receipt attests to where the guest's randomness came from.
+    ///
+    /// The random bytes are only as secret as the seed. A seed that others can compute lets them
+    /// compute the guest's random bytes too, and with them the memory entropy that keeps a
+    /// receipt's post-state digest from revealing private inputs. Derive it with a key you keep.
+    ///
+    /// Only provers that execute the guest in this process honor the seed; the r0vm (`ipc`,
+    /// `actor`) and Bonsai provers refuse an environment that sets one.
+    ///
+    /// ```
+    /// # use risc0_zkvm::ExecutorEnv;
+    /// let env = ExecutorEnv::builder().random_seed([7u8; 32]).build().unwrap();
+    /// ```
+    pub fn random_seed(&mut self, seed: [u8; 32]) -> &mut Self {
+        self.inner.random_seed = Some(seed);
         self
     }
 }

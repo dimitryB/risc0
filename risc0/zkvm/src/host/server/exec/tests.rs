@@ -170,24 +170,36 @@ fn libm_build() {
     multi_test(MultiTestSpec::LibM);
 }
 
+/// A guest's `sys_poseidon2` with pointers is refused at execution: the 3.0 circuit reads them as byte
+/// addresses where the guest ABI passes word addresses, and the prover's preflight refuses the call.
+fn poseidon2_refused(spec: MultiTestSpec) {
+    let Err(err) = multi_test_raw(spec) else {
+        panic!("a sys_poseidon2 with pointers executed");
+    };
+    assert!(
+        format!("{err:#}").contains("sys_poseidon2 cannot be proven"),
+        "{err:#}"
+    );
+}
+
 #[test_log::test]
 fn poseidon2_basic() {
-    multi_test(MultiTestSpec::Poseidon2Basic);
+    poseidon2_refused(MultiTestSpec::Poseidon2Basic);
 }
 
 #[test_log::test]
 fn poseidon2_continue() {
-    multi_test(MultiTestSpec::Poseidon2Continue);
+    poseidon2_refused(MultiTestSpec::Poseidon2Continue);
 }
 
 #[test_log::test]
 fn poseidon2_short() {
-    multi_test(MultiTestSpec::Poseidon2Short);
+    poseidon2_refused(MultiTestSpec::Poseidon2Short);
 }
 
 #[test_log::test]
 fn poseidon2_long() {
-    multi_test(MultiTestSpec::Poseidon2Long);
+    poseidon2_refused(MultiTestSpec::Poseidon2Long);
 }
 
 #[test_log::test]
@@ -653,6 +665,40 @@ mod sys_verify {
         let session = execute_elf(env, MULTI_TEST_ELF).unwrap();
         assert_eq!(session.exit_code, ExitCode::Halted(exit_code as u32));
         session
+    }
+
+    #[test_log::test]
+    fn a_halt_digest_other_than_its_output_is_refused() {
+        // The guest commits to a journal, then halts with a digest that isn't its Output's: it
+        // executes, but the prover proves the Output built from the journal, so no proof of it can
+        // verify. Execution refuses it instead.
+        let env = ExecutorEnv::builder()
+            .write(&MultiTestSpec::HaltWithOutputDigest(Digest::from(
+                [1u32; 8],
+            )))
+            .unwrap()
+            .build()
+            .unwrap();
+        let Err(err) = execute_elf(env, MULTI_TEST_ELF) else {
+            panic!("a halt digest that isn't its output executed");
+        };
+        assert!(
+            format!("{err:#}").contains("no proof of this execution can verify"),
+            "{err:#}"
+        );
+    }
+
+    #[test_log::test]
+    fn a_halt_with_no_output_executes() {
+        // A zero digest means no output (whatever went to the journal): still a valid execution.
+        let env = ExecutorEnv::builder()
+            .write(&MultiTestSpec::HaltWithOutputDigest(Digest::ZERO))
+            .unwrap()
+            .build()
+            .unwrap();
+        let session = execute_elf(env, MULTI_TEST_ELF).unwrap();
+        assert_eq!(session.exit_code, ExitCode::Halted(0));
+        assert!(session.journal.is_none());
     }
 
     fn exec_pause(exit_code: u8) -> Session {
@@ -1256,6 +1302,55 @@ fn post_state_digest_randomization() {
         })
         .collect();
     assert_eq!(post_state_digests.len(), 1);
+}
+
+/// With a random seed, the guest's randomness (`getrandom`, and the memory-image entropy every
+/// guest draws at start) repeats from run to run: so do the journal and the post-state digest. A
+/// different seed changes both, and without a seed each run draws fresh entropy.
+#[test_log::test]
+fn random_seed_repeats_the_guest_randomness() {
+    let run = |seed: Option<[u8; 32]>| {
+        let mut builder = ExecutorEnv::builder();
+        builder.write(&MultiTestSpec::DoRandom).unwrap();
+        if let Some(seed) = seed {
+            builder.random_seed(seed);
+        }
+        let session = execute_elf(builder.build().unwrap(), MULTI_TEST_ELF).unwrap();
+        assert_eq!(session.exit_code, ExitCode::Halted(0));
+        let journal = session.journal.as_ref().unwrap().bytes.clone();
+        let segment = session.segments.last().unwrap().resolve().unwrap();
+        (journal, segment.inner.claim.post_state)
+    };
+
+    let seeded = run(Some([7u8; 32]));
+    assert_eq!(run(Some([7u8; 32])), seeded);
+
+    let other = run(Some([8u8; 32]));
+    assert_ne!(other.0, seeded.0);
+    assert_ne!(other.1, seeded.1);
+
+    let (a, b) = (run(None), run(None));
+    assert_ne!(a.0, b.0);
+    assert_ne!(a.1, b.1);
+}
+
+/// A prover that runs the guest in another process can't honor a random seed: it refuses the
+/// environment before launching anything, rather than silently answering with fresh entropy.
+#[test_log::test]
+fn out_of_process_provers_refuse_a_random_seed() {
+    use crate::{Executor as _, ExternalProver, Prover as _};
+
+    let seeded = || {
+        ExecutorEnv::builder()
+            .random_seed([7u8; 32])
+            .build()
+            .unwrap()
+    };
+    let r0vm = ExternalProver::new("ipc", "/nonexistent/r0vm");
+    let err = r0vm.execute(seeded(), MULTI_TEST_ELF).unwrap_err();
+    assert!(format!("{err:#}").contains("random_seed"), "{err:#}");
+    let err = r0vm.prove(seeded(), MULTI_TEST_ELF).unwrap_err();
+    assert!(format!("{err:#}").contains("random_seed"), "{err:#}");
 }
 
 #[test_log::test]

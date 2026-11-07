@@ -22,7 +22,7 @@ use std::{
     thread::{self, ScopedJoinHandle},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use enum_map::EnumMap;
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use risc0_binfmt::{ByteAddr, MemoryImage, PovwJobId, PovwNonce, WordAddr};
@@ -265,7 +265,9 @@ impl<'a, 'b, S: Syscall> Executor<'a, 'b, S> {
                         self.segment_cycles()
                     );
 
-                    assert!(
+                    // A guest's instruction (an ecall, with its paging) can overrun what the
+                    // threshold leaves it: an error, not a panic.
+                    ensure!(
                         self.segment_cycles() < segment_limit,
                         "segment limit ({segment_limit}) too small for instruction at pc: {:?}",
                         self.pc

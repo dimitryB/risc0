@@ -47,6 +47,7 @@ impl Prover for ExternalProver {
         elf: &[u8],
         opts: &ProverOpts,
     ) -> Result<ProveInfo> {
+        env.refuse_random_seed("r0vm")?;
         tracing::debug!("Launching {}", &self.r0vm_path.to_string_lossy());
 
         let client = ApiClient::new_sub_process(&self.r0vm_path)?;
@@ -88,6 +89,7 @@ impl Prover for ExternalProver {
 
 impl Executor for ExternalProver {
     fn execute(&self, env: ExecutorEnv<'_>, elf: &[u8]) -> Result<SessionInfo> {
+        env.refuse_random_seed("r0vm")?;
         let binary = Asset::Inline(elf.to_vec().into());
         let client = ApiClient::new_sub_process(&self.r0vm_path)?;
         let segments_out = AssetRequest::Inline;

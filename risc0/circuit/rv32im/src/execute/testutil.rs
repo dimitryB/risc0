@@ -216,7 +216,7 @@ mod consts {
 
 use consts::*;
 
-struct Assembler {
+pub struct Assembler {
     text: Vec<u32>,
     data: BTreeMap<u32, u32>,
 }
@@ -252,6 +252,11 @@ impl Assembler {
 
     pub fn word(&mut self, addr: u32, word: u32) {
         self.data.insert(addr, word);
+    }
+
+    /// An instruction word as is: one the helpers here would not encode.
+    pub fn raw(&mut self, insn: u32) {
+        self.text.push(insn);
     }
 
     pub fn add(&mut self, rd: usize, rs1: usize, rs2: usize) {

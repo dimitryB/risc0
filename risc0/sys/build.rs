@@ -15,6 +15,7 @@
 use std::{
     env,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use risc0_build_kernel::{KernelBuild, KernelType};
@@ -204,6 +205,15 @@ fn build_intel_kernels() {
     ];
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    // poseidon2.cpp's OpenCL kernels, compiled ahead of time for the build's Intel targets.
+    poseidon2_ahead_of_time(&intel_dir, &out_dir);
+    // The library's own SYCL/ESIMD kernels stay SPIR-V, which the driver compiles on the card at
+    // the first proof: about 75 s on an Arc B580, 64 s of it the optimized poseidon254 image. The
+    // runtime builds an ESIMD image with -vc-codegen (and -doubleGRF for grf_size<256>), from the
+    // image's properties; icpx 2026.0 runs ocloc for an ahead-of-time image with no options, and
+    // IGC 2.28.4 crashes on the poseidon254 images that way (SIGSEGV in its VLD path). One set of
+    // options for every image would not do either: the library also has SPMD images, and two of
+    // its ESIMD images need 256 GRF while the rest must not get it.
     let args: Vec<std::ffi::OsString> = [
         "-fsycl",
         "-std=c++17",
@@ -219,7 +229,11 @@ fn build_intel_kernels() {
     ]
     .iter()
     .map(Into::into)
-    .chain([format!("-I{}", intel_dir.display()).into()])
+    .chain([
+        format!("-I{}", intel_dir.display()).into(),
+        // poseidon2_aot.inc
+        format!("-I{}", out_dir.display()).into(),
+    ])
     .collect();
 
     let output = risc0_build_kernel::intel_build_library(
@@ -240,6 +254,127 @@ fn build_intel_kernels() {
 
     risc0_build_kernel::intel_link_library(&out_dir, "risc0_intel_kernels");
     risc0_build_kernel::intel_link_sycl_runtime();
+}
+
+/// The Intel targets the build compiles ahead of time, as ocloc names them: `bmg_g21` for
+/// `intel_gpu_bmg_g21` in `RISC0_INTEL_SYCL_TARGETS` (risc0_build_kernel::intel_sycl_targets_arg).
+fn intel_aot_devices() -> Vec<String> {
+    risc0_build_kernel::intel_sycl_targets_arg()
+        .trim_start_matches("-fsycl-targets=")
+        .split(',')
+        .filter_map(|t| t.trim().strip_prefix("intel_gpu_"))
+        // dg2_* are aliases of acm_*, the name poseidon2.cpp looks the device up by.
+        .map(|d| d.replace("dg2_", "acm_"))
+        .fold(Vec::new(), |mut v, d| {
+            if !v.contains(&d) {
+                v.push(d);
+            }
+            v
+        })
+}
+
+/// Compile poseidon2.cpp's two OpenCL C kernel sources ahead of time, for every Intel target the
+/// build compiles its SYCL kernels for, and write `poseidon2_aot.inc` into `out_dir`, which embeds
+/// them for poseidon2.cpp to load natively. Without this the driver compiles them on the card at the
+/// first proof (about 5 minutes on an Arc B580). Any other GPU still compiles the embedded source.
+///
+/// The options are those the run-time build uses (poseidon2.cpp, `ensure_poseidon2_opencl_kernels`),
+/// with ocloc, which is also what the SYCL kernel compiler runs for OpenCL source, so the code is the
+/// same: gate0 in 256-GRF mode except on Alchemist (whose 256-wide SIMD32 work-groups do not run in
+/// that mode there, so it falls back to the default at run time too), commit in the default mode.
+fn poseidon2_ahead_of_time(intel_dir: &Path, out_dir: &Path) {
+    println!("cargo:rerun-if-env-changed=RISC0_OCLOC");
+    let devices = intel_aot_devices();
+    let aot_dir = out_dir.join("poseidon2_aot");
+    let _ = std::fs::remove_dir_all(&aot_dir);
+    std::fs::create_dir_all(&aot_dir).unwrap();
+    let mut jobs = Vec::new();
+    for device in &devices {
+        let alchemist = device.starts_with("acm") || device.starts_with("dg2");
+        let gate0_opts = if alchemist {
+            "-cl-std=CL3.0 -cl-mad-enable"
+        } else {
+            "-cl-std=CL3.0 -cl-mad-enable -cl-intel-256-GRF-per-thread"
+        };
+        jobs.push((device.clone(), "gate0", "poseidon2_gate0.cl", gate0_opts));
+        jobs.push((
+            device.clone(),
+            "commit",
+            "poseidon2_commit.cl",
+            "-cl-std=CL3.0 -cl-mad-enable",
+        ));
+    }
+    let mut embedded = Vec::new();
+    if !jobs.is_empty() {
+        // The intel_gpu_* targets above need ocloc anyway (icpx runs it for them).
+        let ocloc = env::var("RISC0_OCLOC").unwrap_or_else(|_| "ocloc".to_string());
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .iter()
+                .map(|(device, source, file, opts)| {
+                    let ocloc = &ocloc;
+                    let aot_dir = &aot_dir;
+                    scope.spawn(move || {
+                        let name = format!("poseidon2_{source}_{device}");
+                        let out = Command::new(ocloc)
+                            .args(["compile", "-q", "-file"])
+                            .arg(intel_dir.join(file))
+                            .args(["-device", device, "-options", opts, "-output", &name])
+                            .arg("-out_dir")
+                            .arg(aot_dir)
+                            .arg("-output_no_suffix")
+                            .output()
+                            .unwrap_or_else(|e| {
+                                panic!("{ocloc} could not be run ({e}); it compiles the Intel AOT targets")
+                            });
+                        // ocloc names the binary <name>.bin.
+                        let bin = aot_dir.join(format!("{name}.bin"));
+                        if !out.status.success() || !bin.is_file() {
+                            panic!(
+                                "ocloc failed for {file} on {device}:\n{}{}",
+                                String::from_utf8_lossy(&out.stdout),
+                                String::from_utf8_lossy(&out.stderr)
+                            );
+                        }
+                        (device.clone(), *source, bin)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        embedded = results;
+    }
+    let mut inc = String::from(
+        "// Generated by risc0-sys build.rs (poseidon2_ahead_of_time): poseidon2.cpp's OpenCL kernels\n\
+         // compiled ahead of time with ocloc, one native binary per Intel device and source.\n\
+         #pragma once\n#include <cstddef>\n\
+         struct Poseidon2Aot { const char* device; const char* source; const unsigned char* data; size_t size; };\n",
+    );
+    if embedded.is_empty() {
+        inc.push_str("static const Poseidon2Aot* const POSEIDON2_AOT = nullptr;\nstatic const size_t POSEIDON2_AOT_COUNT = 0;\n");
+    } else {
+        inc.push_str("#if !defined(__SYCL_DEVICE_ONLY__)\n#pragma clang diagnostic push\n#pragma clang diagnostic ignored \"-Wc23-extensions\"\n");
+        for (i, (_, _, bin)) in embedded.iter().enumerate() {
+            let path = bin.to_string_lossy().replace('\\', "/");
+            inc.push_str(&format!(
+                "static const unsigned char poseidon2_aot_{i}[] = {{\n#embed \"{path}\"\n}};\n"
+            ));
+        }
+        inc.push_str(
+            "#pragma clang diagnostic pop\nstatic const Poseidon2Aot POSEIDON2_AOT[] = {\n",
+        );
+        for (i, (device, source, _)) in embedded.iter().enumerate() {
+            inc.push_str(&format!(
+                "    {{\"{device}\", \"{source}\", poseidon2_aot_{i}, sizeof(poseidon2_aot_{i})}},\n"
+            ));
+        }
+        inc.push_str(&format!(
+            "}};\nstatic const size_t POSEIDON2_AOT_COUNT = {};\n#else\n\
+             static const Poseidon2Aot* const POSEIDON2_AOT = nullptr;\nstatic const size_t POSEIDON2_AOT_COUNT = 0;\n#endif\n",
+            embedded.len()
+        ));
+    }
+    std::fs::write(out_dir.join("poseidon2_aot.inc"), inc).unwrap();
 }
 
 fn build_metal_kernels() {

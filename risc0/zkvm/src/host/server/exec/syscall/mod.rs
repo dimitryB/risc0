@@ -178,7 +178,7 @@ impl<'a> SyscallTable<'a> {
             .with_syscall(SYS_LOG, SysLog)
             .with_syscall(SYS_PANIC, SysPanic)
             .with_syscall(SYS_PIPE, SysPipe::default())
-            .with_syscall(SYS_RANDOM, SysRandom)
+            .with_syscall(SYS_RANDOM, SysRandom::new(env.random_seed))
             .with_syscall(SYS_READ, SysRead)
             .with_syscall(SYS_VERIFY_INTEGRITY, SysVerify)
             .with_syscall(SYS_VERIFY_INTEGRITY2, SysVerify2)

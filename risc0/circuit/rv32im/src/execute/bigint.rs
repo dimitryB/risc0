@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod analyze;
+pub(crate) mod verify;
 
 use std::{
     collections::BTreeMap,
@@ -143,10 +144,10 @@ impl<Risc0ContextT: Risc0Context> BigIntIO for BigIntIOImpl<'_, Risc0ContextT> {
 pub(crate) struct BigIntExec {
     pub(crate) mode: u32,
     pub(crate) verify_program_ptr: WordAddr,
-    pub(crate) verify_program_size: usize,
     pub(crate) witness: BigIntWitness,
 }
 
+#[cfg(test)]
 fn write_witness_to_memory(witness: BigIntWitness, ctx: &mut impl Risc0Context) -> Result<()> {
     for (addr, bytes) in witness {
         for (i, chunk) in bytes.chunks_exact(WORD_SIZE).enumerate() {
@@ -157,12 +158,15 @@ fn write_witness_to_memory(witness: BigIntWitness, ctx: &mut impl Risc0Context) 
     Ok(())
 }
 
+/// Execute a bigint ecall: evaluate its nondet program for the witness, then run its verify program
+/// exactly as the prover's preflight will (see [`verify::run`]) — so a witness the circuit would
+/// reject fails here, memory takes the writes the proof will have, in their order, and the cycles
+/// counted are the ones the proof will take. (It used to write the whole witness at once and charge
+/// the verify program's declared size: a guest could pass execution with a program the prover then
+/// refused, or that ran a different number of cycles, and every proof of it failed.)
 pub fn ecall_execute(ctx: &mut impl Risc0Context) -> Result<usize> {
     let exec = ecall(ctx)?;
-    let cycles = exec.verify_program_size + 1;
-    write_witness_to_memory(exec.witness, ctx)?;
-
-    Ok(cycles)
+    verify::run(ctx, &exec, |_, _, _| {})
 }
 
 // A thin function to drain a reader. Optimizes well with inlining.
@@ -230,7 +234,6 @@ pub(crate) fn ecall(ctx: &mut impl Risc0Context) -> Result<BigIntExec> {
     Ok(BigIntExec {
         mode,
         verify_program_ptr,
-        verify_program_size,
         witness,
     })
 }

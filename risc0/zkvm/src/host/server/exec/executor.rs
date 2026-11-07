@@ -41,6 +41,7 @@ use tracing::Level;
 use crate::{
     claim::receipt::exit_code_from_terminate_state,
     host::{client::env::SegmentPath, server::session::Session},
+    sha::Digestible as _,
     Assumptions, ExecutorEnv, FileSegmentRef, Output, Segment, SegmentRef,
 };
 
@@ -239,6 +240,21 @@ impl<'a> ExecutorImpl<'a> {
                 })
                 .flatten()
                 .transpose()?;
+
+            // The guest commits to its output by the digest it halts (or pauses) with; the prover
+            // proves the claim built here, from the journal and the assumptions used, and checks
+            // the last segment's seal against it. A guest that halts with any other digest
+            // executes cleanly and no proof of it can verify: refuse it now.
+            if inner.claim.terminate_state.is_some() {
+                let committed = inner.claim.output.unwrap_or(Digest::ZERO);
+                let built = output.as_ref().map_or(Digest::ZERO, |o| o.digest());
+                if committed != built {
+                    bail!(
+                        "guest halted with output digest {committed}, but its journal and \
+                         assumptions give {built}: no proof of this execution can verify"
+                    );
+                }
+            }
 
             let segment = Segment {
                 index: inner.index as u32,

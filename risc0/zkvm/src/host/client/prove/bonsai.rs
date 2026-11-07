@@ -70,6 +70,7 @@ impl Prover for BonsaiProver {
         elf: &[u8],
         opts: &ProverOpts,
     ) -> Result<ProveInfo> {
+        env.refuse_random_seed("Bonsai")?;
         let client = Client::from_env(VERSION)?;
 
         // Compute the ImageID and upload the ELF binary

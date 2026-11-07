@@ -86,6 +86,7 @@ impl Prover for DefaultProver {
         elf: &[u8],
         _opts: &ProverOpts,
     ) -> Result<ProveInfo> {
+        env.refuse_random_seed("r0vm actor")?;
         let proof_request = ProofRequest {
             binary: elf.to_vec(),
             input: env.input,
