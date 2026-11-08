@@ -220,7 +220,21 @@ pub trait ProverServer: private::Sealed {
             tracing::warn!("groth16 prover prestart failed (non-fatal): {e}");
             PrestartedProver::default()
         });
+        let verbose = std::env::var_os("RISC0_VERBOSE").is_some();
+        let identity_started = verbose.then(std::time::Instant::now);
+        if verbose {
+            eprintln!(
+                "[identity_profile] begin prestart_ms={:.3}",
+                t0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         let ident_receipt = self.identity_p254(receipt).unwrap();
+        if let Some(identity_started) = identity_started {
+            eprintln!(
+                "[identity_profile] end identity_prove_ms={:.3}",
+                identity_started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         let ident_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         let t1 = std::time::Instant::now();

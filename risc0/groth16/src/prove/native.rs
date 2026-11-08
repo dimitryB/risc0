@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -252,6 +252,7 @@ pub struct Prestarted {
     child: OwnedChild,
     work: tempfile::TempDir,
     started: Instant,
+    output_log: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Start key loading while identity_p254 runs. The helper waits on stdin for the witness.
@@ -264,7 +265,8 @@ pub fn prestart() -> Result<Prestarted> {
     };
     let output = work.path().join("proof.json");
     let started = Instant::now();
-    let child = Command::new(config.root.join("prover"))
+    let verbose = std::env::var_os("RISC0_VERBOSE").is_some();
+    let mut child = Command::new(config.root.join("prover"))
         .arg(format!("--native-parent={}", std::process::id()))
         .arg(format!("--native-timeout={}s", config.timeout.as_secs()))
         .arg("--native-no-gc-setup")
@@ -275,14 +277,29 @@ pub fn prestart() -> Result<Prestarted> {
         .env_clear()
         .env("GOMAXPROCS", config.threads.to_string())
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(if verbose {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stderr(Stdio::null())
         .spawn()
         .context("start native Groth16 prover")?;
+    let output_log = child.stdout.take().map(|stdout| {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                match line {
+                    Ok(line) => eprintln!("[native_helper] {line}"),
+                    Err(_) => break,
+                }
+            }
+        })
+    });
     Ok(Prestarted {
         child: OwnedChild(child),
         work,
         started,
+        output_log,
     })
 }
 
@@ -324,6 +341,9 @@ pub fn shrink_wrap_started(seal: &[u8], prestarted: Option<Prestarted>) -> Resul
         std::thread::sleep(Duration::from_millis(10));
     };
     ensure!(status.success(), "native Groth16 prover failed: {status}");
+    if let Some(output_log) = prover.output_log.take() {
+        let _ = output_log.join();
+    }
     let output = prover.work.path().join("proof.json");
     ensure!(
         std::fs::metadata(&output)?.len() <= 16384,

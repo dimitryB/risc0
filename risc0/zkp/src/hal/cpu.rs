@@ -14,7 +14,7 @@
 
 //! CPU implementation of the HAL.
 
-use std::{fmt::Debug, ops::Range, sync::Arc};
+use std::{fmt::Debug, ops::Range, sync::Arc, time::Instant};
 
 use ndarray::{ArrayView, ArrayViewMut, Axis};
 use parking_lot::{
@@ -38,9 +38,35 @@ pub struct CpuHal<F: Field> {
     suite: HashSuite<F>,
 }
 
+struct IdentityProfileTimer {
+    name: &'static str,
+    started: Option<Instant>,
+}
+
+impl Drop for IdentityProfileTimer {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            eprintln!(
+                "[identity_profile_cpu] {}={:.3}ms",
+                self.name,
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+}
+
 impl<F: Field> CpuHal<F> {
     pub fn new(suite: HashSuite<F>) -> Self {
         Self { suite }
+    }
+
+    fn identity_profile_timer(&self, name: &'static str) -> IdentityProfileTimer {
+        IdentityProfileTimer {
+            name,
+            started: (self.suite.name == "poseidon254"
+                && std::env::var_os("RISC0_VERBOSE").is_some())
+            .then(Instant::now),
+        }
     }
 }
 
@@ -309,6 +335,7 @@ impl<F: Field> Hal for CpuHal<F> {
         count: usize,
         expand_bits: usize,
     ) {
+        let _profile = self.identity_profile_timer("expand_evaluate_ntt");
         // batch_expand
         {
             let out_size = output.size() / count;
@@ -340,6 +367,7 @@ impl<F: Field> Hal for CpuHal<F> {
     }
 
     fn batch_interpolate_ntt(&self, io: &Self::Buffer<Self::Elem>, count: usize) {
+        let _profile = self.identity_profile_timer("interpolate_ntt");
         let row_size = io.size() / count;
         assert_eq!(row_size * count, io.size());
         io.as_slice_mut()
@@ -350,6 +378,7 @@ impl<F: Field> Hal for CpuHal<F> {
     }
 
     fn batch_bit_reverse(&self, io: &Self::Buffer<Self::Elem>, count: usize) {
+        let _profile = self.identity_profile_timer("bit_reverse");
         let row_size = io.size() / count;
         assert_eq!(row_size * count, io.size());
         io.as_slice_mut()
@@ -367,6 +396,7 @@ impl<F: Field> Hal for CpuHal<F> {
         xs: &Self::Buffer<Self::ExtElem>,
         out: &Self::Buffer<Self::ExtElem>,
     ) {
+        let _profile = self.identity_profile_timer("evaluate_any");
         let po2 = log2_ceil(coeffs.size() / poly_count);
         assert_eq!(poly_count * (1 << po2), coeffs.size());
         let eval_count = which.size();
@@ -393,6 +423,7 @@ impl<F: Field> Hal for CpuHal<F> {
     }
 
     fn zk_shift(&self, io: &Self::Buffer<Self::Elem>, poly_count: usize) {
+        let _profile = self.identity_profile_timer("zk_shift");
         let bits = log2_ceil(io.size() / poly_count);
         let count = io.size();
         assert_eq!(io.size(), poly_count * (1 << bits));
@@ -417,6 +448,7 @@ impl<F: Field> Hal for CpuHal<F> {
         input_size: usize,
         count: usize,
     ) {
+        let _profile = self.identity_profile_timer("mix_poly_coeffs");
         tracing::debug!(
             "output: {}, input: {}, combos: {}, input_size: {input_size}, count: {count}",
             output.size(),
@@ -527,6 +559,7 @@ impl<F: Field> Hal for CpuHal<F> {
         input: &Self::Buffer<Self::Elem>,
         mix: &Self::ExtElem,
     ) {
+        let _profile = self.identity_profile_timer("fri_fold");
         let count = output.size() / Self::ExtElem::EXT_SIZE;
         assert_eq!(output.size(), count * Self::ExtElem::EXT_SIZE);
         assert_eq!(input.size(), output.size() * FRI_FOLD);
@@ -553,6 +586,7 @@ impl<F: Field> Hal for CpuHal<F> {
     }
 
     fn hash_rows(&self, output: &Self::Buffer<Digest>, matrix: &Self::Buffer<Self::Elem>) {
+        let _profile = self.identity_profile_timer("hash_rows");
         let row_size = output.size();
         let col_size = matrix.size() / output.size();
         assert_eq!(matrix.size(), col_size * row_size);
@@ -567,6 +601,7 @@ impl<F: Field> Hal for CpuHal<F> {
     }
 
     fn hash_fold(&self, io: &Self::Buffer<Digest>, input_size: usize, output_size: usize) {
+        let _profile = self.identity_profile_timer("hash_fold");
         assert!(io.size() >= 2 * input_size);
         assert_eq!(input_size, 2 * output_size);
         let io = io.as_slice_sync();
