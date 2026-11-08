@@ -386,6 +386,7 @@ fn build_metal_kernels() {
             "mix.metal",
             "ntt.metal",
             "poseidon2.metal",
+            "poseidon254.metal",
             "sha.metal",
             "zk.metal",
         ],
@@ -415,6 +416,7 @@ fn embed_metal_sources() {
         "mix.metal",
         "ntt.metal",
         "poseidon2.metal",
+        "poseidon254.metal",
         "sha.metal",
         "zk.metal",
     ];

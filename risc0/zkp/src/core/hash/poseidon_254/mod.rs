@@ -257,6 +257,101 @@ mod tests {
 
     use super::*;
 
+    #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn metal_field_arithmetic_parity() {
+        use crate::hal::{
+            metal::{KernelArg, MetalHalPoseidon254},
+            Buffer, Hal,
+        };
+
+        fn from_limbs(limbs: [u32; 8]) -> Fr {
+            let mut repr = FrRepr::default();
+            let mut bytes = [0u8; 32];
+            for (index, limb) in limbs.iter().enumerate() {
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&limb.to_le_bytes());
+            }
+            repr.as_mut().copy_from_slice(&bytes);
+            Fr::from_repr_vartime(repr).unwrap()
+        }
+
+        fn to_limbs(value: Fr) -> [u32; 8] {
+            let repr = value.to_repr();
+            let bytes = repr.as_ref();
+            std::array::from_fn(|index| {
+                u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
+            })
+        }
+
+        let modulus_minus_one = [
+            0xf0000000, 0x43e1f593, 0x79b97091, 0x2833e848, 0x8181585d, 0xb85045b6, 0xe131a029,
+            0x30644e72,
+        ];
+        let montgomery_r = [
+            0x4ffffffb, 0xac96341c, 0x9f60cd29, 0x36fc7695, 0x7879462e, 0x666ea36f, 0x9a07df2f,
+            0x0e0a77c1,
+        ];
+        let montgomery_r2 = [
+            0xae216da7, 0x1bb8e645, 0xe35c59e3, 0x53fe3ab1, 0x53bb8085, 0x8c49833d, 0x7f4e44a5,
+            0x0216d0b1,
+        ];
+        let mut values = vec![
+            Fr::ZERO,
+            Fr::ONE,
+            -Fr::ONE,
+            from_limbs(montgomery_r),
+            from_limbs(montgomery_r2),
+            from_limbs(modulus_minus_one),
+        ];
+        let mut state = 0x9e3779b97f4a7c15u64;
+        for _ in 0..128 {
+            let mut limbs = [0u32; 8];
+            for limb in &mut limbs {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *limb = state as u32;
+            }
+            limbs[7] &= 0x1fffffff;
+            values.push(from_limbs(limbs));
+        }
+        let pairs: Vec<_> = values
+            .iter()
+            .copied()
+            .zip(values.iter().rev().copied())
+            .collect();
+        let mut input = Vec::with_capacity(pairs.len() * 16);
+        for (a, b) in &pairs {
+            input.extend_from_slice(&to_limbs(*a));
+            input.extend_from_slice(&to_limbs(*b));
+        }
+        let gpu = MetalHalPoseidon254::new();
+        let in_buffer = gpu.copy_from_u32("field_probe_input", &input);
+        let out_buffer = gpu.alloc_u32("field_probe_output", input.len());
+        gpu.dispatch_by_name(
+            "poseidon254_field_probe",
+            &[
+                in_buffer.as_arg(),
+                out_buffer.as_arg(),
+                KernelArg::Integer(pairs.len() as u32),
+            ],
+            pairs.len() as u64,
+        );
+        let actual = out_buffer.to_vec();
+        for (index, (a, b)) in pairs.iter().enumerate() {
+            assert_eq!(
+                &actual[index * 16..index * 16 + 8],
+                &to_limbs(*a + *b),
+                "add {index}"
+            );
+            assert_eq!(
+                &actual[index * 16 + 8..index * 16 + 16],
+                &to_limbs(*a * *b),
+                "mul {index}"
+            );
+        }
+    }
+
     #[test]
     fn p254_test_vectors() {
         let mut input = Vec::<BabyBearElem>::new();

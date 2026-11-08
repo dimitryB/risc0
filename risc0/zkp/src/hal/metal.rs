@@ -19,7 +19,10 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     mem, slice,
-    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -45,6 +48,7 @@ use crate::{
         digest::Digest,
         hash::{
             poseidon2::{self, Poseidon2HashSuite},
+            poseidon_254::Poseidon254HashSuite,
             sha::Sha256HashSuite,
             HashSuite,
         },
@@ -86,6 +90,9 @@ const KERNEL_NAMES: &[&str] = &[
     "multi_poly_eval",
     "poseidon2_fold",
     "poseidon2_rows",
+    "poseidon254_field_probe",
+    "poseidon254_fold",
+    "poseidon254_rows",
     "sha_fold",
     "sha_rows",
     "zk_shift",
@@ -100,7 +107,11 @@ fn mark_first_completed_dispatch() {
     if FIRST_COMPLETED_DISPATCH_EPOCH_NS.load(Ordering::Relaxed) == 0 {
         if let Ok(since_epoch) = SystemTime::now().duration_since(UNIX_EPOCH) {
             let _ = FIRST_COMPLETED_DISPATCH_EPOCH_NS.compare_exchange(
-                0, since_epoch.as_nanos() as u64, Ordering::Relaxed, Ordering::Relaxed);
+                0,
+                since_epoch.as_nanos() as u64,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
         }
     }
 }
@@ -231,6 +242,49 @@ impl MetalHash for MetalHashPoseidon2 {
     }
 }
 
+pub struct MetalHashPoseidon254 {
+    suite: HashSuite<BabyBear>,
+}
+
+impl MetalHash for MetalHashPoseidon254 {
+    fn new(_hal: &MetalHal<Self>) -> Self {
+        Self {
+            suite: Poseidon254HashSuite::new_suite(),
+        }
+    }
+
+    fn hash_fold(&self, hal: &MetalHal<Self>, io: &BufferImpl<Digest>, output_size: usize) {
+        let args = &[
+            io.as_arg_with_offset(output_size),
+            io.as_arg_with_offset(output_size * 2),
+            KernelArg::Integer(output_size as u32),
+        ];
+        hal.dispatch_by_name("poseidon254_fold", args, output_size as u64);
+    }
+
+    fn hash_rows(
+        &self,
+        hal: &MetalHal<Self>,
+        output: &BufferImpl<Digest>,
+        matrix: &BufferImpl<BabyBearElem>,
+    ) {
+        let row_size = output.size();
+        let col_size = matrix.size() / row_size;
+        assert_eq!(matrix.size(), row_size * col_size);
+        let args = &[
+            output.as_arg(),
+            matrix.as_arg(),
+            KernelArg::Integer(row_size as u32),
+            KernelArg::Integer(col_size as u32),
+        ];
+        hal.dispatch_by_name("poseidon254_rows", args, row_size as u64);
+    }
+
+    fn get_hash_suite(&self) -> &HashSuite<BabyBear> {
+        &self.suite
+    }
+}
+
 #[derive(Debug)]
 pub struct MetalHal<Hash: MetalHash + ?Sized> {
     pub device: Device,
@@ -248,6 +302,7 @@ pub struct MetalHal<Hash: MetalHash + ?Sized> {
 
 pub type MetalHalSha256 = MetalHal<MetalHashSha256>;
 pub type MetalHalPoseidon2 = MetalHal<MetalHashPoseidon2>;
+pub type MetalHalPoseidon254 = MetalHal<MetalHashPoseidon254>;
 
 /// Cumulative command-buffer GPU time and pipeline limits for one Metal stage/kernel.
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -1746,8 +1801,9 @@ fn compute_launch_params(n_bits: u32, s_bits: u32, c_size: u32) -> (MTLSize, MTL
 mod tests {
     use test_log::test;
 
-    use super::{MetalHalPoseidon2, MetalHalSha256};
+    use super::{MetalHalPoseidon2, MetalHalPoseidon254, MetalHalSha256};
     use crate::{
+        core::digest::Digest,
         field::baby_bear::BabyBearElem,
         hal::{cpu::CpuHal, testutil, Buffer, Hal},
     };
@@ -1888,6 +1944,39 @@ mod tests {
     #[test]
     fn hash_rows_poseidon2() {
         testutil::hash_rows(MetalHalPoseidon2::new());
+    }
+
+    #[test]
+    fn hash_fold_poseidon254() {
+        let gpu = MetalHalPoseidon254::new();
+        let cpu = CpuHal::new(gpu.get_hash_suite().clone());
+        // Fr digests must be canonical; the generic hash test intentionally
+        // generates arbitrary 256-bit digests for hash suites that accept them.
+        let mut values = vec![Digest::from([0; 8]); 64];
+        for (i, digest) in values[32..].iter_mut().enumerate() {
+            *digest = Digest::from([
+                i as u32,
+                0,
+                i as u32 * 17,
+                0,
+                1,
+                i as u32 * 31,
+                0,
+                0x1fffffff,
+            ]);
+        }
+        for _ in 0..2 {
+            let gpu_io = gpu.copy_from_digest("poseidon254_fold", &values);
+            let cpu_io = cpu.copy_from_digest("poseidon254_fold", &values);
+            gpu.hash_fold(&gpu_io, 32, 16);
+            cpu.hash_fold(&cpu_io, 32, 16);
+            assert_eq!(gpu_io.to_vec(), cpu_io.to_vec());
+        }
+    }
+
+    #[test]
+    fn hash_rows_poseidon254() {
+        testutil::hash_rows(MetalHalPoseidon254::new());
     }
 
     #[test]

@@ -44,7 +44,9 @@ use risc0_zkp::{
         map_pow, RootsOfUnity,
     },
     hal::{
-        metal::{BufferImpl, KernelArg, MetalHalPoseidon2},
+        metal::{
+            BufferImpl, KernelArg, MetalHal, MetalHalPoseidon2, MetalHalPoseidon254, MetalHash,
+        },
         AccumPreflight, Buffer, CircuitHal, Hal,
     },
     INV_RATE,
@@ -85,14 +87,14 @@ pub fn metal_recursion_kernel_source() -> &'static str {
     }
 }
 
-pub(crate) struct MetalCircuitHal {
-    hal: Arc<MetalHalPoseidon2>,
+pub(crate) struct MetalCircuitHal<H: MetalHash> {
+    hal: Arc<MetalHal<H>>,
     kernels: Vec<ComputePipelineDescriptor>,
     split: bool,
 }
 
-impl MetalCircuitHal {
-    fn new(hal: Arc<MetalHalPoseidon2>) -> Result<Self> {
+impl<H: MetalHash> MetalCircuitHal<H> {
+    fn new(hal: Arc<MetalHal<H>>) -> Result<Self> {
         let split = split_enabled();
         let options = CompileOptions::new();
         options.set_fast_math_enabled(false);
@@ -148,7 +150,7 @@ impl MetalCircuitHal {
     }
 }
 
-impl CircuitWitnessGenerator<MetalHalPoseidon2> for MetalCircuitHal {
+impl<H: MetalHash> CircuitWitnessGenerator<MetalHal<H>> for MetalCircuitHal<H> {
     fn generate_witness(
         &self,
         mode: StepMode,
@@ -188,7 +190,7 @@ impl CircuitWitnessGenerator<MetalHalPoseidon2> for MetalCircuitHal {
     }
 }
 
-impl CircuitAccumulator<MetalHalPoseidon2> for MetalCircuitHal {
+impl<H: MetalHash> CircuitAccumulator<MetalHal<H>> for MetalCircuitHal<H> {
     fn accumulate(
         &self,
         work: u32,
@@ -220,7 +222,7 @@ impl CircuitAccumulator<MetalHalPoseidon2> for MetalCircuitHal {
     }
 }
 
-impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
+impl<H: MetalHash> CircuitHal<MetalHal<H>> for MetalCircuitHal<H> {
     fn eval_check(
         &self,
         check: &BufferImpl<BabyBearElem>,
@@ -339,21 +341,35 @@ impl CircuitHal<MetalHalPoseidon2> for MetalCircuitHal {
 pub(crate) fn recursion_prover(hashfn: &str) -> Result<Box<dyn RecursionProver>> {
     match std::env::var("RISC0_RECURSION_HAL").as_deref() {
         Err(std::env::VarError::NotPresent) | Ok("cpu") => super::cpu::recursion_prover(hashfn),
-        Ok("metal") if hashfn == "poseidon2" => metal::objc::rc::autoreleasepool(|| {
-            let hal = Arc::new(MetalHalPoseidon2::new());
-            let circuit = Arc::new(MetalCircuitHal::new(hal.clone())?);
-            tracing::info!(
-                hashfn,
-                witness = "cpu-shared",
-                accumulation = "cpu-shared",
-                "recursion Metal enabled"
-            );
-            Ok(Box::new(RecursionProverImpl::new(hal, circuit)) as Box<dyn RecursionProver>)
-        }),
+        Ok("metal") if hashfn == "poseidon2" || hashfn == "poseidon254" => {
+            metal::objc::rc::autoreleasepool(|| {
+                if hashfn == "poseidon254" {
+                    let hal = Arc::new(MetalHalPoseidon254::new());
+                    let circuit = Arc::new(MetalCircuitHal::new(hal.clone())?);
+                    tracing::info!(
+                        hashfn,
+                        witness = "cpu-shared",
+                        accumulation = "cpu-shared",
+                        "recursion Metal enabled"
+                    );
+                    return Ok(Box::new(RecursionProverImpl::new(hal, circuit))
+                        as Box<dyn RecursionProver>);
+                }
+                let hal = Arc::new(MetalHalPoseidon2::new());
+                let circuit = Arc::new(MetalCircuitHal::new(hal.clone())?);
+                tracing::info!(
+                    hashfn,
+                    witness = "cpu-shared",
+                    accumulation = "cpu-shared",
+                    "recursion Metal enabled"
+                );
+                Ok(Box::new(RecursionProverImpl::new(hal, circuit)) as Box<dyn RecursionProver>)
+            })
+        }
         Ok("metal") => {
             tracing::info!(
                 hashfn,
-                "recursion CPU selected; Metal supports Poseidon2 only"
+                "recursion CPU selected; Metal supports Poseidon2 and Poseidon254 only"
             );
             super::cpu::recursion_prover(hashfn)
         }
