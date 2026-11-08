@@ -341,9 +341,9 @@ impl<H: MetalHash> CircuitHal<MetalHal<H>> for MetalCircuitHal<H> {
 pub(crate) fn recursion_prover(hashfn: &str) -> Result<Box<dyn RecursionProver>> {
     match std::env::var("RISC0_RECURSION_HAL").as_deref() {
         Err(std::env::VarError::NotPresent) | Ok("cpu") => super::cpu::recursion_prover(hashfn),
-        Ok("metal") if hashfn == "poseidon2" || hashfn == "poseidon254" => {
+        Ok("metal") if hashfn == "poseidon2" || hashfn == "poseidon_254" => {
             metal::objc::rc::autoreleasepool(|| {
-                if hashfn == "poseidon254" {
+                if hashfn == "poseidon_254" {
                     let hal = Arc::new(MetalHalPoseidon254::new());
                     let circuit = Arc::new(MetalCircuitHal::new(hal.clone())?);
                     tracing::info!(
