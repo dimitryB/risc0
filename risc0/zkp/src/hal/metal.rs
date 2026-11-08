@@ -1980,6 +1980,27 @@ mod tests {
     }
 
     #[test]
+    fn identity_merkle_poseidon254() {
+        // The identity circuit's data commitment uses 2^18 rows and 128
+        // BabyBear columns; this also exercises every Merkle fold level.
+        let rows = 1 << 18;
+        let cols = 128;
+        let gpu = MetalHalPoseidon254::new();
+        let cpu = CpuHal::new(gpu.get_hash_suite().clone());
+        let values: Vec<_> = (0..rows * cols)
+            .map(|index| BabyBearElem::new(index as u32 + 1))
+            .collect();
+        let gpu_matrix = gpu.copy_from_elem("identity_data", &values);
+        let cpu_matrix = cpu.copy_from_elem("identity_data", &values);
+        drop(values);
+        let gpu_nodes = gpu.alloc_digest("identity_merkle", rows * 2);
+        let cpu_nodes = cpu.alloc_digest("identity_merkle", rows * 2);
+        gpu.hash_tree(&gpu_nodes, &gpu_matrix, rows, 18);
+        cpu.hash_tree(&cpu_nodes, &cpu_matrix, rows, 18);
+        assert_eq!(gpu_nodes.to_vec(), cpu_nodes.to_vec());
+    }
+
+    #[test]
     fn slice() {
         testutil::slice(MetalHalSha256::new());
     }
